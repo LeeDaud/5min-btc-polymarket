@@ -435,6 +435,8 @@ def main():
                 'min_spread': min_spread,
             })
 
+            print(f"[{ts_utc()}] {slug} UP_ask={up_ask} DOWN_ask={dn_ask} sec_left={sec_left:.0f}", flush=True)
+
             candidates: list[tuple[str, float]] = []
             max_entry = float(args.max_entry_price or 1.0)
             if up_ask is not None and float(up_ask) >= args.threshold and float(up_ask) <= max_entry:
@@ -452,10 +454,12 @@ def main():
                     'clob_down_ask': dn_ask,
                     'seconds_left': sec_left,
                 })
+                print(f"  -> SKIP (need ask in [{args.threshold:.2f}, {max_entry:.2f}])", flush=True)
                 time.sleep(args.poll_sec)
                 continue
 
             side, trigger_price = sorted(candidates, key=lambda x: x[1], reverse=True)[0]
+            print(f"  -> ENTER {side} at ask={trigger_price:.4f}", flush=True)
 
             out, objs = run_open(args.repo, slug, side, args.stake_usd, args.execute)
             post = None
