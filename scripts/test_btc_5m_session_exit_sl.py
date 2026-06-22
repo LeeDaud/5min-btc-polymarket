@@ -559,7 +559,7 @@ def main():
     print(f"  Market ends: {opened['market_end_iso']}")
     print(f"{'='*60}\n")
 
-    # monitor after open: stop-loss or time exit
+    # monitor after open: trailing stop + on-chain GTC safety net
     end_ts = None
     try:
         end_ts = dt.datetime.fromisoformat(opened['market_end_iso'].replace('Z', '+00:00')).timestamp()
@@ -570,7 +570,26 @@ def main():
     highest_price = opened['entry_price']
     trail_stop = highest_price * (1.0 - trail_pct)
     tp_price = opened['entry_price'] * (1.0 + args.take_profit_pct) if args.take_profit_pct > 0 else None
-    cooldown_until = time.time() + 15  # let bid-ask settle after entry
+    cooldown_until = time.time() + 15
+
+    # Place on-chain GTC safety sell at initial trail stop price
+    gtc_safety_id: Optional[str] = None
+    gtc_safety_price = 0.0
+    if client and opened['shares'] > 0 and args.execute:
+        try:
+            from py_clob_client_v2.clob_types import OrderArgs, OrderType as OT2
+            from py_clob_client_v2 import Side as S2
+            sx = client.create_order(OrderArgs(
+                token_id=opened['token_id'], price=round(trail_stop, 2),
+                size=opened['shares'], side=S2.SELL,
+            ))
+            gtc_result = client.post_order(sx)
+            if isinstance(gtc_result, dict) and gtc_result.get('orderID'):
+                gtc_safety_id = str(gtc_result['orderID'])
+                gtc_safety_price = trail_stop
+                print(f"  [SAFETY] GTC sell placed @ {trail_stop:.4f}  order={gtc_safety_id[:20]}...")
+        except Exception as e:
+            print(f"  [SAFETY] GTC placement failed: {e}")
 
     report['trail_stop_pct'] = trail_pct
     report['initial_trail_stop'] = trail_stop
@@ -594,12 +613,33 @@ def main():
         if side_px is not None:
             if side_px > highest_price:
                 highest_price = side_px
-                trail_stop = highest_price * (1.0 - trail_pct)
+                new_trail = highest_price * (1.0 - trail_pct)
+                # Update on-chain GTC when trail stop moves up
+                if new_trail > gtc_safety_price + 0.01 and client and args.execute:
+                    try:
+                        if gtc_safety_id:
+                            client.cancel(gtc_safety_id)
+                        new_price = round(new_trail, 2)
+                        from py_clob_client_v2.clob_types import OrderArgs as OA
+                        from py_clob_client_v2 import Side as S2
+                        sx = client.create_order(OA(
+                            token_id=opened['token_id'], price=new_price,
+                            size=opened['shares'], side=S2.SELL,
+                        ))
+                        gtc_result = client.post_order(sx)
+                        if isinstance(gtc_result, dict) and gtc_result.get('orderID'):
+                            gtc_safety_id = str(gtc_result['orderID'])
+                            gtc_safety_price = new_price
+                            print(f"  [SAFETY] GTC updated to {new_price:.4f}  order={gtc_safety_id[:20]}...")
+                    except Exception:
+                        pass
+                trail_stop = new_trail
 
             pnl_pct = (side_px - opened['entry_price']) / opened['entry_price'] * 100
             h_msg = '^' if side_px == highest_price else ''
             cool = '(cool)' if now < cooldown_until else ''
-            print(f"[{ts_utc()}] price={side_px:.4f}{h_msg}  PnL={pnl_pct:+.1f}%  trail_stop={trail_stop:.4f}  {cool} exit_in={sec_left:.0f}s", flush=True)
+            safe = 'GTC' if gtc_safety_id else ''
+            print(f"[{ts_utc()}] price={side_px:.4f}{h_msg}  PnL={pnl_pct:+.1f}%  trail_stop={trail_stop:.4f}  {cool}{safe} exit_in={sec_left:.0f}s", flush=True)
 
         if now >= cooldown_until:
             if side_px is not None and side_px <= trail_stop:
@@ -610,6 +650,13 @@ def main():
                 close_reason = f"take_profit_{int(args.take_profit_pct * 100)}pct"
                 break
         time.sleep(args.poll_sec)
+
+    # Cancel safety GTC before close-out
+    if gtc_safety_id and client:
+        try:
+            client.cancel(gtc_safety_id)
+        except Exception:
+            pass
 
     close_debug: list[dict[str, Any]] = []
     close_obj: dict[str, Any] = {}
