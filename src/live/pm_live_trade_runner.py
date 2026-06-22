@@ -163,11 +163,11 @@ def open_position(args) -> dict:
         ot = OrderType.FAK if order_type == "FAK" else OrderType.GTC
 
         # Use trigger_price (CLOB ask) to set the buy limit — willing to pay up to this much
-        signed = client.create_market_order(
+        result = client.create_and_post_market_order(
             MarketOrderArgs(token_id=token_id, amount=max_notional, side=Side.BUY, order_type=ot),
             options=PartialCreateOrderOptions(tick_size="0.01"),
+            order_type=ot,
         )
-        result = client.post_order(signed)
 
         entry_price = ref_price
         if isinstance(result, dict):
@@ -219,11 +219,11 @@ def close_position(args) -> dict:
         from py_clob_client_v2 import Side
 
         if order_type == "FAK":
-            signed = client.create_market_order(
+            result = client.create_and_post_market_order(
                 MarketOrderArgs(token_id=token_id, amount=shares, side=Side.SELL, order_type=OrderType.FAK),
                 options=PartialCreateOrderOptions(tick_size="0.01"),
+                order_type=OrderType.FAK,
             )
-            result = client.post_order(signed)
         else:
             price = limit_price or 0.01
             signed = client.create_order(OrderArgs(
