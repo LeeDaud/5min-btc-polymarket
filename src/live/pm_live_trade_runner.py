@@ -63,7 +63,7 @@ def get_clob_client() -> Optional[Any]:
             c = ClobClient(host="https://clob.polymarket.com", chain_id=POLYGON, key=key, signature_type=sig, funder=funder, creds=creds)
             return c
 
-        print(json.dumps({"error": "auth failed — could not derive API key"}))
+        print(json.dumps({"error": "auth failed - could not derive API key"}))
         return None
     except Exception as e:
         print(json.dumps({"error": f"auth failed: {e}"}))
@@ -162,7 +162,7 @@ def open_position(args) -> dict:
 
         ot = OrderType.FAK if order_type == "FAK" else OrderType.GTC
 
-        # Use trigger_price (CLOB ask) to set the buy limit — willing to pay up to this much
+        # Use trigger_price (CLOB ask) to set the buy limit - willing to pay up to this much
         result = client.create_and_post_market_order(
             MarketOrderArgs(token_id=token_id, amount=max_notional, side=Side.BUY, order_type=ot),
             options=PartialCreateOrderOptions(tick_size="0.01"),
