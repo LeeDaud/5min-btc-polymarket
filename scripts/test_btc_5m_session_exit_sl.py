@@ -323,28 +323,30 @@ PROFILES: dict[str, dict[str, Any]] = {
     'conservative': {
         'threshold': 0.72,
         'max_entry_price': 0.88,
-        'stake_usd': 4.0,
-        'trail_stop_pct': 0.13,
-        'take_profit_pct': 0.20,
-        'hedge_ratio': 0.10,
+        'stake_usd': 3.0,
+        'trail_stop_pct': 0.10,
+        'take_profit_pct': 0.0,
+        'hedge_ratio': 0.0,
         'exit_before_sec': 30,
         'emergency_exit_sec': 10,
         'min_entry_seconds_left': 60,
         'entry_timeout_min': 60,
-        'poll_sec': 2.0,
+        'poll_sec': 1.0,
+        'net_fail_limit': 2,
     },
     'aggressive': {
         'threshold': 0.68,
         'max_entry_price': 0.90,
-        'stake_usd': 4.0,
-        'trail_stop_pct': 0.18,
-        'take_profit_pct': 0.20,
-        'hedge_ratio': 0.08,
+        'stake_usd': 3.0,
+        'trail_stop_pct': 0.15,
+        'take_profit_pct': 0.0,
+        'hedge_ratio': 0.0,
         'exit_before_sec': 30,
         'emergency_exit_sec': 10,
         'min_entry_seconds_left': 60,
         'entry_timeout_min': 60,
-        'poll_sec': 2.0,
+        'poll_sec': 1.0,
+        'net_fail_limit': 2,
     },
 }
 
@@ -621,7 +623,7 @@ def main():
             from py_clob_client_v2.clob_types import OrderArgs, OrderType as OT2
             from py_clob_client_v2 import Side as S2
             sx = client.create_order(OrderArgs(
-                token_id=opened['token_id'], price=round(trail_stop, 2),
+                token_id=opened['token_id'], price=round(trail_stop - 0.02, 2),
                 size=opened['shares'], side=S2.SELL,
             ))
             gtc_result = client.post_order(sx)
@@ -634,7 +636,7 @@ def main():
 
     report['trail_stop_pct'] = trail_pct
     report['initial_trail_stop'] = trail_stop
-    print(f"  Trail Stop: {trail_pct*100:.0f}% below peak  Initial: {trail_stop:.4f}  Cooldown: 15s  Exit before: {args.exit_before_sec}s")
+    print(f"  Trail Stop: {trail_pct*100:.0f}% below peak  Initial: {trail_stop:.4f}  Cooldown: 10s  FailLimit: {getattr(args, 'net_fail_limit', 2)}  ExitBefore: {args.exit_before_sec}s")
 
     close_reason = None
     net_fails = 0
@@ -656,7 +658,8 @@ def main():
         except Exception:
             side_px = None
             net_fails += 1
-            if net_fails >= 3:
+            fail_limit = getattr(args, 'net_fail_limit', 2)
+            if net_fails >= fail_limit:
                 print(f'  [ALERT] 3 consecutive network failures, force-closing...')
                 close_reason = 'force_close_network_loss'
                 break
@@ -672,7 +675,7 @@ def main():
                     try:
                         if gtc_safety_id:
                             client.cancel(gtc_safety_id)
-                        new_price = round(new_trail, 2)
+                        new_price = round(new_trail - 0.02, 2)
                         from py_clob_client_v2.clob_types import OrderArgs as OA
                         from py_clob_client_v2 import Side as S2
                         sx = client.create_order(OA(
