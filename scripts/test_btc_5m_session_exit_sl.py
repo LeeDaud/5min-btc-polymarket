@@ -283,6 +283,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         'max_entry_price': 0.92,
         'stake_usd': 5.0,
         'stop_loss_pct': 0.15,
+        'take_profit_pct': 0.15,
         'exit_before_sec': 20,
         'min_entry_seconds_left': 60,
         'entry_timeout_min': 60,
@@ -293,6 +294,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         'max_entry_price': 0.92,
         'stake_usd': 5.0,
         'stop_loss_pct': 0.20,
+        'take_profit_pct': 0.20,
         'exit_before_sec': 20,
         'min_entry_seconds_left': 60,
         'entry_timeout_min': 60,
@@ -311,6 +313,8 @@ def apply_profile(args: argparse.Namespace) -> argparse.Namespace:
         args.stake_usd = float(prof['stake_usd'])
     if args.stop_loss_pct is None:
         args.stop_loss_pct = float(prof['stop_loss_pct'])
+    if args.take_profit_pct is None:
+        args.take_profit_pct = float(prof.get('take_profit_pct', 0))
     if args.exit_before_sec is None:
         args.exit_before_sec = int(prof['exit_before_sec'])
     if args.min_entry_seconds_left is None:
@@ -344,6 +348,7 @@ def main():
     ap.add_argument('--max-entry-price', type=float, default=None, help='Skip entry if CLOB ask > this price (no upside)')
     ap.add_argument('--stake-usd', type=float, default=None)
     ap.add_argument('--stop-loss-pct', type=float, default=None, help='0.30 means -30%% from entry price')
+    ap.add_argument('--take-profit-pct', type=float, default=None, help='0.15 means +15%% from entry price, 0=disabled')
     ap.add_argument('--exit-before-sec', type=int, default=None)
     ap.add_argument('--min-entry-seconds-left', type=int, default=None, help='Do not open if less seconds remain in current 5m slot')
     ap.add_argument('--entry-timeout-min', type=int, default=None)
@@ -361,6 +366,7 @@ def main():
             'max_entry_price': args.max_entry_price,
             'stake_usd': args.stake_usd,
             'stop_loss_pct': args.stop_loss_pct,
+            'take_profit_pct': args.take_profit_pct,
             'exit_before_sec': args.exit_before_sec,
             'min_entry_seconds_left': args.min_entry_seconds_left,
             'entry_timeout_min': args.entry_timeout_min,
@@ -519,8 +525,13 @@ def main():
         end_ts = time.time() + 300
 
     sl_price = opened['entry_price'] * (1.0 - args.stop_loss_pct)
+    tp_price = opened['entry_price'] * (1.0 + args.take_profit_pct) if args.take_profit_pct > 0 else None
     report['stop_loss_price'] = sl_price
-    print(f"  Stop-loss: {sl_price:.4f}  Exit before: {args.exit_before_sec}s")
+    if tp_price:
+        report['take_profit_price'] = tp_price
+        print(f"  Stop-loss: {sl_price:.4f}  Take-profit: {tp_price:.4f}  Exit before: {args.exit_before_sec}s")
+    else:
+        print(f"  Stop-loss: {sl_price:.4f}  Exit before: {args.exit_before_sec}s")
 
     close_reason = None
     while True:
@@ -536,10 +547,15 @@ def main():
 
         if side_px is not None:
             pnl_pct = (side_px - opened['entry_price']) / opened['entry_price'] * 100
-            print(f"[{ts_utc()}] price={side_px:.4f}  PnL={pnl_pct:+.1f}%  SL={sl_price:.4f}  exit_in={sec_left:.0f}s", flush=True)
+            tp_str = f'TP={tp_price:.4f}' if tp_price else ''
+            print(f"[{ts_utc()}] price={side_px:.4f}  PnL={pnl_pct:+.1f}%  SL={sl_price:.4f}  {tp_str}  exit_in={sec_left:.0f}s", flush=True)
 
         if side_px is not None and side_px <= sl_price:
             close_reason = f"stop_loss_{int(args.stop_loss_pct * 100)}pct"
+            break
+
+        if tp_price and side_px is not None and side_px >= tp_price:
+            close_reason = f"take_profit_{int(args.take_profit_pct * 100)}pct"
             break
         time.sleep(args.poll_sec)
 

@@ -72,6 +72,9 @@ profiles:
     stop_loss:
       enabled: true
       stop_loss_pct_from_entry: 0.15
+    take_profit:
+      enabled: true
+      take_profit_pct_from_entry: 0.15
 
   aggressive:
     description: "More entries, earlier momentum catch, moderate stop. After optimization."
@@ -98,6 +101,9 @@ profiles:
     stop_loss:
       enabled: true
       stop_loss_pct_from_entry: 0.20
+    take_profit:
+      enabled: true
+      take_profit_pct_from_entry: 0.20
 
 runner_mapping:
   script: "skills/btc-5m-live/scripts/test_btc_5m_session_exit_sl.py"
