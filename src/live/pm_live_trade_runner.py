@@ -30,7 +30,7 @@ load_dotenv()
 # ============================================================
 
 def get_clob_client() -> Optional[Any]:
-    """Create an authenticated ClobClient from environment variables."""
+    """Create an authenticated ClobClient, deriving L2 creds from wallet if needed."""
     try:
         from py_clob_client.client import ClobClient
         from py_clob_client.constants import POLYGON
@@ -42,31 +42,38 @@ def get_clob_client() -> Optional[Any]:
     key = os.getenv("PM_PRIVATE_KEY") or ""
     funder = os.getenv("PM_FUNDER") or os.getenv("PM_ADDRESS") or None
     sig = int(os.getenv("PM_SIGNATURE_TYPE", "2"))
-    v1 = os.getenv("PM_API_KEY") or ""
-    v2 = os.getenv("PM_API_SECRET") or ""
-    v3 = os.getenv("PM_API_PASSPHRASE") or ""
 
-    if not key or not v1 or not v2 or not v3:
-        print(json.dumps({
-            "error": "missing credentials",
-            "detail": "Set PM_PRIVATE_KEY, PM_API_KEY, PM_API_SECRET, PM_API_PASSPHRASE in .env"
-        }))
+    if not key:
+        print(json.dumps({"error": "missing credentials", "detail": "Set PM_PRIVATE_KEY in .env"}))
         return None
 
     try:
-        c = ClobClient(
-            host="https://clob.polymarket.com",
-            chain_id=POLYGON,
-            key=key,
-            signature_type=sig,
-            funder=funder,
-        )
-        c.set_api_creds(ApiCreds(
-            api_key=v1,
-            api_secret=v2,
-            api_passphrase=v3,
-        ))
-        return c
+        c = ClobClient(host="https://clob.polymarket.com", chain_id=POLYGON, key=key, signature_type=sig, funder=funder)
+
+        # First try: use env vars if they look valid
+        v2 = os.getenv("PM_API_SECRET") or ""
+        if v2 and len(v2) >= 43 and not v2.startswith("0x"):
+            v1 = os.getenv("PM_API_KEY") or ""
+            v3 = os.getenv("PM_API_PASSPHRASE") or v2
+            try:
+                c.set_api_creds(ApiCreds(api_key=v1, api_secret=v2, api_passphrase=v3))
+                c.get_server_time()
+                return c
+            except Exception:
+                pass
+
+        # Second try: derive L2 creds from wallet signature
+        try:
+            creds = c.create_or_derive_api_creds()
+            if creds:
+                c.set_api_creds(creds)
+                _ = c.get_server_time()
+                return c
+        except Exception:
+            pass
+
+        print(json.dumps({"error": "auth failed — both env creds and wallet derivation failed"}))
+        return None
     except Exception as e:
         print(json.dumps({"error": f"auth failed: {e}"}))
         return None
