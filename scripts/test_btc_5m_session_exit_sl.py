@@ -170,21 +170,16 @@ def clob_best_bid(token_id: str, clob_base: str = 'https://clob.polymarket.com')
 def auth_clob_client(clob_base: str = 'https://clob.polymarket.com') -> Optional[ClobClient]:
     try:
         key = os.getenv('PM_PRIVATE_KEY') or ''
-        funder = os.getenv('PM_FUNDER') or os.getenv('PM_ADDRESS') or None
-        sig = int(os.getenv('PM_SIGNATURE_TYPE', '2'))
-        v1 = os.getenv('PM_API_KEY') or ''
-        v2 = os.getenv('PM_API_SECRET') or ''
-        v3 = os.getenv('PM_API_PASSPHRASE') or ''
-        if not key or not v1 or not v2 or not v3:
+        funder = os.getenv('PM_DEPOSIT_WALLET') or os.getenv('PM_FUNDER') or None
+        sig = int(os.getenv('PM_SIGNATURE_TYPE', '3'))
+        if not key:
             return None
         c = ClobClient(host=clob_base, chain_id=POLYGON, key=key, signature_type=sig, funder=funder)
-        creds = {
-            f"api_{'key'}": v1,
-            f"api_{'secret'}": v2,
-            f"api_{'passphrase'}": v3,
-        }
-        c.set_api_creds(ApiCreds(**creds))
-        return c
+        creds = c.create_or_derive_api_key()
+        if creds:
+            c = ClobClient(host=clob_base, chain_id=POLYGON, key=key, signature_type=sig, funder=funder, creds=creds)
+            return c
+        return None
     except Exception:
         return None
 

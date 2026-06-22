@@ -31,43 +31,20 @@ def get_clob_client() -> Optional[Any]:
         return None
 
     key = os.getenv("PM_PRIVATE_KEY") or ""
-    sig = int(os.getenv("PM_SIGNATURE_TYPE", "2"))
-    funder = os.getenv("PM_FUNDER") or os.getenv("PM_ADDRESS") or None
+    # V2 deposit wallet flow: use signature_type=3 (POLY_1271)
+    sig = int(os.getenv("PM_SIGNATURE_TYPE", "3"))
+    # funder = Polymarket deposit wallet (NOT the EOA)
+    funder = os.getenv("PM_DEPOSIT_WALLET") or os.getenv("PM_FUNDER") or None
 
     if not key:
         print(json.dumps({"error": "missing credentials", "detail": "Set PM_PRIVATE_KEY in .env"}))
         return None
 
     try:
-        # First try: use env vars if they look valid
-        v1 = os.getenv("PM_API_KEY") or ""
-        v2 = os.getenv("PM_API_SECRET") or ""
-        v3 = os.getenv("PM_API_PASSPHRASE") or v2
-
-        if v2 and len(v2) >= 43 and not v2.startswith("0x"):
-            creds = ApiCreds(api_key=v1, api_secret=v2, api_passphrase=v3)
-            c = ClobClient(
-                host="https://clob.polymarket.com",
-                chain_id=POLYGON, key=key,
-                signature_type=sig, funder=funder,
-                creds=creds,
-            )
-            return c
-
-        # Second try: create client without creds, then derive
-        c = ClobClient(
-            host="https://clob.polymarket.com",
-            chain_id=POLYGON, key=key,
-            signature_type=sig, funder=funder,
-        )
+        c = ClobClient(host="https://clob.polymarket.com", chain_id=POLYGON, key=key, signature_type=sig, funder=funder)
         creds = c.create_or_derive_api_key()
         if creds:
-            c = ClobClient(
-                host="https://clob.polymarket.com",
-                chain_id=POLYGON, key=key,
-                signature_type=sig, funder=funder,
-                creds=creds,
-            )
+            c = ClobClient(host="https://clob.polymarket.com", chain_id=POLYGON, key=key, signature_type=sig, funder=funder, creds=creds)
             return c
 
         print(json.dumps({"error": "auth failed — could not derive API key"}))
@@ -163,15 +140,15 @@ def open_position(args) -> dict:
         return {"error": "authentication failed"}
 
     try:
-        from py_clob_client_v2.clob_types import MarketOrderArgs, OrderType
+        from py_clob_client_v2.clob_types import MarketOrderArgs, OrderType, PartialCreateOrderOptions
         from py_clob_client_v2 import Side
 
         ot = OrderType.FAK if order_type == "FAK" else OrderType.GTC
 
-        signed = client.create_market_order(MarketOrderArgs(
-            token_id=token_id, amount=max_notional,
-            side=Side.BUY, order_type=ot,
-        ))
+        signed = client.create_market_order(
+            MarketOrderArgs(token_id=token_id, amount=max_notional, side=Side.BUY, price=0.5, order_type=ot),
+            options=PartialCreateOrderOptions(tick_size="0.01"),
+        )
         result = client.post_order(signed)
 
         entry_price = ref_price
@@ -220,14 +197,14 @@ def close_position(args) -> dict:
         return {"error": "authentication failed"}
 
     try:
-        from py_clob_client_v2.clob_types import MarketOrderArgs, OrderArgs, OrderType
+        from py_clob_client_v2.clob_types import MarketOrderArgs, OrderArgs, OrderType, PartialCreateOrderOptions
         from py_clob_client_v2 import Side
 
         if order_type == "FAK":
-            signed = client.create_market_order(MarketOrderArgs(
-                token_id=token_id, amount=shares,
-                side=Side.SELL, order_type=OrderType.FAK,
-            ))
+            signed = client.create_market_order(
+                MarketOrderArgs(token_id=token_id, amount=shares, side=Side.SELL, price=0.5, order_type=OrderType.FAK),
+                options=PartialCreateOrderOptions(tick_size="0.01"),
+            )
             result = client.post_order(signed)
         else:
             price = limit_price or 0.01

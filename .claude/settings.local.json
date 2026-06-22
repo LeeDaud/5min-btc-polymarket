@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "Bash(git clone *)",
+      "Bash(node *)",
+      "Bash(curl *)",
+      "Bash(python3 -m json.tool)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "WebSearch",
+      "WebFetch(domain:docs.polymarket.com)",
+      "Bash(D:/AAA-Project/026-polymarket/5min-btc-polymarket/.venv/Scripts/python *)",
+      "Bash(ping *)",
+      "Bash(ssh *)",
+      "Bash(D:/AAA-Project/026-polymarket/.venv/Scripts/pip install *)"
+    ]
+  }
+}
