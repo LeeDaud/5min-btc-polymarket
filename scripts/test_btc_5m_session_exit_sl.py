@@ -501,6 +501,12 @@ def main():
 
     report['opened'] = opened
 
+    print(f"\n{'='*60}")
+    print(f"POSITION OPENED: {opened['side']} @ {opened['entry_price']:.4f}")
+    print(f"  Shares: {opened['shares']:.4f}  Cost: ${opened['cost_usdc']:.2f}")
+    print(f"  Market ends: {opened['market_end_iso']}")
+    print(f"{'='*60}\n")
+
     # monitor after open: stop-loss or time exit
     end_ts = None
     try:
@@ -510,10 +516,12 @@ def main():
 
     sl_price = opened['entry_price'] * (1.0 - args.stop_loss_pct)
     report['stop_loss_price'] = sl_price
+    print(f"  Stop-loss: {sl_price:.4f}  Exit before: {args.exit_before_sec}s")
 
     close_reason = None
     while True:
         now = time.time()
+        sec_left = end_ts - now
         if now >= (end_ts - args.exit_before_sec):
             close_reason = f'time_exit_{args.exit_before_sec}s_before_end'
             break
@@ -521,6 +529,11 @@ def main():
         side_px = get_side_price_from_slug(opened['market_slug'], opened['side'])
         report['last_side_price'] = side_px
         report['last_check_at'] = ts_utc()
+
+        if side_px is not None:
+            pnl_pct = (side_px - opened['entry_price']) / opened['entry_price'] * 100
+            print(f"[{ts_utc()}] price={side_px:.4f}  PnL={pnl_pct:+.1f}%  SL={sl_price:.4f}  exit_in={sec_left:.0f}s", flush=True)
+
         if side_px is not None and side_px <= sl_price:
             close_reason = f"stop_loss_{int(args.stop_loss_pct * 100)}pct"
             break
