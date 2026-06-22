@@ -69,12 +69,10 @@ profiles:
       hedge_share_of_main_pct: 3
       hedge_notional_usd_min: 1
       hedge_notional_usd_max: 2
-    stop_loss:
+    trail_stop:
       enabled: true
-      stop_loss_pct_from_entry: 0.15
-    take_profit:
-      enabled: true
-      take_profit_pct_from_entry: 0.15
+      trail_stop_pct: 0.15
+      note: "Starts at entry*(1-pct)=initial SL, rises with peak, locks profit"
 
   aggressive:
     description: "More entries, earlier momentum catch, moderate stop. After optimization."
@@ -98,12 +96,10 @@ profiles:
       hedge_share_of_main_pct: 5
       hedge_notional_usd_min: 1
       hedge_notional_usd_max: 3
-    stop_loss:
+    trail_stop:
       enabled: true
-      stop_loss_pct_from_entry: 0.20
-    take_profit:
-      enabled: true
-      take_profit_pct_from_entry: 0.20
+      trail_stop_pct: 0.20
+      note: "Starts at entry*(1-pct)=initial SL, rises with peak, locks profit"
 
 runner_mapping:
   script: "skills/btc-5m-live/scripts/test_btc_5m_session_exit_sl.py"
