@@ -126,16 +126,21 @@ def market_side_prices(market: dict[str, Any]) -> tuple[float, float, str, str, 
 
 
 def _best_bid_ask(book) -> tuple[Optional[float], Optional[float]]:
-    bids = getattr(book, 'bids', []) or []
-    asks = getattr(book, 'asks', []) or []
+    # V2 returns dict; V1 returns object. Handle both.
+    if isinstance(book, dict):
+        bids = book.get('bids') or []
+        asks = book.get('asks') or []
+    else:
+        bids = getattr(book, 'bids', []) or []
+        asks = getattr(book, 'asks', []) or []
     best_bid = None
     best_ask = None
     for b in bids:
-        p = float(getattr(b, 'price', 0) or 0)
+        p = float(b.get('price', 0) if isinstance(b, dict) else (getattr(b, 'price', 0) or 0))
         if best_bid is None or p > best_bid:
             best_bid = p
     for a in asks:
-        p = float(getattr(a, 'price', 0) or 0)
+        p = float(a.get('price', 0) if isinstance(a, dict) else (getattr(a, 'price', 0) or 0))
         if best_ask is None or p < best_ask:
             best_ask = p
     return best_bid, best_ask
