@@ -321,26 +321,24 @@ def get_side_price_from_slug(slug: str, side: str) -> Optional[float]:
 
 PROFILES: dict[str, dict[str, Any]] = {
     'conservative': {
-        'threshold': 0.75,
-        'max_entry_price': 0.92,
+        'threshold': 0.72,
+        'max_entry_price': 0.88,
         'stake_usd': 5.0,
-        'trail_stop_pct': 0.15,
-
+        'trail_stop_pct': 0.13,
         'exit_before_sec': 20,
         'min_entry_seconds_left': 60,
         'entry_timeout_min': 60,
-        'poll_sec': 5.0,
+        'poll_sec': 2.0,
     },
     'aggressive': {
-        'threshold': 0.70,
-        'max_entry_price': 0.92,
+        'threshold': 0.68,
+        'max_entry_price': 0.90,
         'stake_usd': 5.0,
-        'trail_stop_pct': 0.20,
-        'take_profit_pct': 0.20,
+        'trail_stop_pct': 0.18,
         'exit_before_sec': 20,
         'min_entry_seconds_left': 60,
         'entry_timeout_min': 60,
-        'poll_sec': 5.0,
+        'poll_sec': 2.0,
     },
 }
 
@@ -570,7 +568,7 @@ def main():
     highest_price = opened['entry_price']
     trail_stop = highest_price * (1.0 - trail_pct)
     tp_price = opened['entry_price'] * (1.0 + args.take_profit_pct) if args.take_profit_pct > 0 else None
-    cooldown_until = time.time() + 15
+    cooldown_until = time.time() + 10
 
     # Place on-chain GTC safety sell at initial trail stop price
     gtc_safety_id: Optional[str] = None
@@ -596,6 +594,7 @@ def main():
     print(f"  Trail Stop: {trail_pct*100:.0f}% below peak  Initial: {trail_stop:.4f}  Cooldown: 15s  Exit before: {args.exit_before_sec}s")
 
     close_reason = None
+    net_fails = 0
     while True:
         now = time.time()
         sec_left = end_ts - now
@@ -605,8 +604,14 @@ def main():
 
         try:
             side_px = clob_best_bid(opened['token_id'])
+            net_fails = 0
         except Exception:
             side_px = None
+            net_fails += 1
+            if net_fails >= 3:
+                print(f'  [ALERT] 3 consecutive network failures, force-closing...')
+                close_reason = 'force_close_network_loss'
+                break
         report['last_side_price'] = side_px
         report['last_check_at'] = ts_utc()
 
