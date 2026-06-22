@@ -545,7 +545,7 @@ def main():
     if not opened:
         report['finished_at'] = ts_utc()
         report['result'] = 'no_entry_timeout'
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        print(f'[{ts_utc()}] TIMEOUT - no valid entry signal found', flush=True)
         return
 
     report['opened'] = opened
@@ -764,7 +764,12 @@ def main():
     report['finished_at'] = ts_utc()
     report['result'] = 'done'
 
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    # Compact summary instead of full JSON dump
+    pnl_str = f'${pnl:+.2f}' if pnl else 'N/A'
+    side = opened.get('side', '?')
+    entry = opened.get('entry_price', 0)
+    reason = closed.get('close_reason', '?')
+    print(f'\nTRADE DONE | {side} entry=@{entry:.3f} PnL={pnl_str} exit={reason} tx={opened.get(\"open_tx\",\"?\")[:20]}...', flush=True)
 
 
 if __name__ == '__main__':
