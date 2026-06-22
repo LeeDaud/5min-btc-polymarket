@@ -6,7 +6,7 @@ description: Run and monitor BTC 5-minute Up/Down trading on Polymarket using mo
 # BTC 5m Live
 
 ## Paths
-- Main trading repo: `<your-workspace>/pm-hl-conservative-plus-repo` (or set `BTC5M_REPO`)
+- Trading repo: this repository (self-contained; override via `BTC5M_REPO` env)
 - Core runner: `src/live/pm_live_trade_runner.py`
 - Canonical skill runner: `scripts/test_btc_5m_session_exit_sl.py`
 - Skill control entrypoint: `scripts/btc5m_ctl.sh`

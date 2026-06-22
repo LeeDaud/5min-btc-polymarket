@@ -19,10 +19,10 @@
   - `scripts/btc5m_docker.sh`
 
 ## External dependency boundary
-- Order placement/close engine is delegated to:
-  - `<your-workspace>/pm-hl-conservative-plus-repo/src/live/pm_live_trade_runner.py`
+- Order placement/close engine (self-contained):
+  - `src/live/pm_live_trade_runner.py`
 - Auth source:
-  - `<your-workspace>/pm-hl-conservative-plus-repo/.env` (or `BTC5M_ENV_FILE`)
+  - `.env` in repo root (or `BTC5M_ENV_FILE`)
 
 ## Runtime artifacts
 - Primary runtime dir (skill-isolated):

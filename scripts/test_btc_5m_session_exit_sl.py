@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import os
 import subprocess
+import sys
 import time
 from typing import Any, Optional
 from pathlib import Path
@@ -221,7 +222,7 @@ def cancel_token_orders(client: Optional[ClobClient], token_id: str) -> Optional
 
 def run_open(repo: str, slug: str, side: str, stake: float, execute: bool) -> tuple[str, list[dict[str, Any]]]:
     cmd = [
-        '.venv/bin/python',
+        _venv_python(repo),
         'src/live/pm_live_trade_runner.py',
         '--market-slug', slug,
         '--force-side', side,
@@ -250,7 +251,7 @@ def run_close(
     close_limit_price: float | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     cmd = [
-        '.venv/bin/python',
+        _venv_python(repo),
         'src/live/pm_live_trade_runner.py',
         '--market-slug', slug,
         '--close-token-id', token_id,
@@ -330,7 +331,14 @@ def default_repo_path() -> str:
     env_repo = os.environ.get('BTC5M_REPO')
     if env_repo:
         return env_repo
-    return str(Path(__file__).resolve().parents[3] / 'pm-hl-conservative-plus-repo')
+    return str(Path(__file__).resolve().parents[1])  # repo root (self-contained)
+
+
+def _venv_python(repo: str) -> str:
+    """Cross-platform path to venv Python."""
+    if sys.platform == 'win32':
+        return str(Path(repo) / '.venv' / 'Scripts' / 'python.exe')
+    return str(Path(repo) / '.venv' / 'bin' / 'python')
 
 
 def main():
