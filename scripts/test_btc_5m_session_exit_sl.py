@@ -567,10 +567,11 @@ def main():
     highest_price = opened['entry_price']
     trail_stop = highest_price * (1.0 - trail_pct)
     tp_price = opened['entry_price'] * (1.0 + args.take_profit_pct) if args.take_profit_pct > 0 else None
+    cooldown_until = time.time() + 15  # let bid-ask settle after entry
 
     report['trail_stop_pct'] = trail_pct
     report['initial_trail_stop'] = trail_stop
-    print(f"  Trail Stop: {trail_pct*100:.0f}% below peak  Initial: {trail_stop:.4f}  Exit before: {args.exit_before_sec}s")
+    print(f"  Trail Stop: {trail_pct*100:.0f}% below peak  Initial: {trail_stop:.4f}  Cooldown: 15s  Exit before: {args.exit_before_sec}s")
 
     close_reason = None
     while True:
@@ -585,22 +586,23 @@ def main():
         report['last_check_at'] = ts_utc()
 
         if side_px is not None:
-            # Update highest price and trailing stop
             if side_px > highest_price:
                 highest_price = side_px
                 trail_stop = highest_price * (1.0 - trail_pct)
 
             pnl_pct = (side_px - opened['entry_price']) / opened['entry_price'] * 100
             h_msg = '^' if side_px == highest_price else ''
-            print(f"[{ts_utc()}] price={side_px:.4f}{h_msg}  PnL={pnl_pct:+.1f}%  trail_stop={trail_stop:.4f}  exit_in={sec_left:.0f}s", flush=True)
+            cool = '(cool)' if now < cooldown_until else ''
+            print(f"[{ts_utc()}] price={side_px:.4f}{h_msg}  PnL={pnl_pct:+.1f}%  trail_stop={trail_stop:.4f}  {cool} exit_in={sec_left:.0f}s", flush=True)
 
-        if side_px is not None and side_px <= trail_stop:
-            close_reason = f"trail_stop_{int(trail_pct * 100)}pct"
-            break
+        if now >= cooldown_until:
+            if side_px is not None and side_px <= trail_stop:
+                close_reason = f"trail_stop_{int(trail_pct * 100)}pct"
+                break
 
-        if tp_price and side_px is not None and side_px >= tp_price:
-            close_reason = f"take_profit_{int(args.take_profit_pct * 100)}pct"
-            break
+            if tp_price and side_px is not None and side_px >= tp_price:
+                close_reason = f"take_profit_{int(args.take_profit_pct * 100)}pct"
+                break
         time.sleep(args.poll_sec)
 
     close_debug: list[dict[str, Any]] = []
