@@ -11,6 +11,9 @@ from pathlib import Path
 
 import requests
 
+import logging
+logging.getLogger('py_clob_client_v2').setLevel(logging.CRITICAL)
+
 from py_clob_client_v2.client import ClobClient
 from py_clob_client_v2.constants import POLYGON
 from py_clob_client_v2.clob_types import ApiCreds
@@ -581,7 +584,10 @@ def main():
             close_reason = f'time_exit_{args.exit_before_sec}s_before_end'
             break
 
-        side_px = clob_best_bid(opened['token_id'])
+        try:
+            side_px = clob_best_bid(opened['token_id'])
+        except Exception:
+            side_px = None
         report['last_side_price'] = side_px
         report['last_check_at'] = ts_utc()
 
