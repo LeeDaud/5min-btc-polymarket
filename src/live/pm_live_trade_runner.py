@@ -20,8 +20,10 @@ load_dotenv()
 # Authentication
 # ============================================================
 
+CREDS_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../.api_creds.json')
+
 def get_clob_client() -> Optional[Any]:
-    """Create an authenticated ClobClient using V2 API."""
+    """Create an authenticated ClobClient using V2 API, caching derived creds."""
     try:
         from py_clob_client_v2.client import ClobClient
         from py_clob_client_v2.constants import POLYGON
@@ -31,9 +33,7 @@ def get_clob_client() -> Optional[Any]:
         return None
 
     key = os.getenv("PM_PRIVATE_KEY") or ""
-    # V2 deposit wallet flow: use signature_type=3 (POLY_1271)
     sig = int(os.getenv("PM_SIGNATURE_TYPE", "3"))
-    # funder = Polymarket deposit wallet (NOT the EOA)
     funder = os.getenv("PM_DEPOSIT_WALLET") or os.getenv("PM_FUNDER") or None
 
     if not key:
@@ -41,9 +41,25 @@ def get_clob_client() -> Optional[Any]:
         return None
 
     try:
+        # Use cached creds if available
+        if os.path.exists(CREDS_CACHE):
+            try:
+                with open(CREDS_CACHE) as f:
+                    cached = json.load(f)
+                creds = ApiCreds(api_key=cached['api_key'], api_secret=cached['api_secret'], api_passphrase=cached['api_passphrase'])
+                c = ClobClient(host="https://clob.polymarket.com", chain_id=POLYGON, key=key, signature_type=sig, funder=funder, creds=creds)
+                _ = c.get_server_time()
+                return c
+            except Exception:
+                pass
+
+        # Derive and cache
         c = ClobClient(host="https://clob.polymarket.com", chain_id=POLYGON, key=key, signature_type=sig, funder=funder)
         creds = c.create_or_derive_api_key()
         if creds:
+            data = {'api_key': creds.api_key, 'api_secret': creds.api_secret, 'api_passphrase': creds.api_passphrase}
+            with open(CREDS_CACHE, 'w') as f:
+                json.dump(data, f)
             c = ClobClient(host="https://clob.polymarket.com", chain_id=POLYGON, key=key, signature_type=sig, funder=funder, creds=creds)
             return c
 

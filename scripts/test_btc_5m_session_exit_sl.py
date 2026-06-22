@@ -172,6 +172,25 @@ def clob_best_bid(token_id: str, clob_base: str = 'https://clob.polymarket.com')
     return best_bid
 
 
+CREDS_CACHE = Path(__file__).resolve().parents[1] / '.api_creds.json'
+
+def _load_cached_creds():
+    try:
+        if CREDS_CACHE.exists():
+            with open(CREDS_CACHE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return None
+
+def _save_cached_creds(creds):
+    try:
+        data = {'api_key': creds.api_key, 'api_secret': creds.api_secret, 'api_passphrase': creds.api_passphrase}
+        with open(CREDS_CACHE, 'w') as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
 def auth_clob_client(clob_base: str = 'https://clob.polymarket.com') -> Optional[ClobClient]:
     try:
         key = os.getenv('PM_PRIVATE_KEY') or ''
@@ -179,9 +198,23 @@ def auth_clob_client(clob_base: str = 'https://clob.polymarket.com') -> Optional
         sig = int(os.getenv('PM_SIGNATURE_TYPE', '3'))
         if not key:
             return None
+
+        # Try cached creds first
+        cached = _load_cached_creds()
+        if cached:
+            try:
+                creds = ApiCreds(api_key=cached['api_key'], api_secret=cached['api_secret'], api_passphrase=cached['api_passphrase'])
+                c = ClobClient(host=clob_base, chain_id=POLYGON, key=key, signature_type=sig, funder=funder, creds=creds)
+                _ = c.get_server_time()
+                return c
+            except Exception:
+                pass  # cached creds invalid, re-derive
+
+        # Derive new creds and cache them
         c = ClobClient(host=clob_base, chain_id=POLYGON, key=key, signature_type=sig, funder=funder)
         creds = c.create_or_derive_api_key()
         if creds:
+            _save_cached_creds(creds)
             c = ClobClient(host=clob_base, chain_id=POLYGON, key=key, signature_type=sig, funder=funder, creds=creds)
             return c
         return None
