@@ -174,7 +174,7 @@ def open_position(args) -> dict:
             making = float(result.get("makingAmount") or 0)
             taking = float(result.get("takingAmount") or 0)
             if taking > 0:
-                entry_price = making / taking / 1e6
+                entry_price = making / taking
 
         return {
             "order_post_result": result if isinstance(result, dict) else {"raw": str(result)},
