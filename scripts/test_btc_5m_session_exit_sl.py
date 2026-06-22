@@ -323,9 +323,12 @@ PROFILES: dict[str, dict[str, Any]] = {
     'conservative': {
         'threshold': 0.72,
         'max_entry_price': 0.88,
-        'stake_usd': 5.0,
+        'stake_usd': 4.0,
         'trail_stop_pct': 0.13,
-        'exit_before_sec': 20,
+        'take_profit_pct': 0.20,
+        'hedge_ratio': 0.10,
+        'exit_before_sec': 30,
+        'emergency_exit_sec': 10,
         'min_entry_seconds_left': 60,
         'entry_timeout_min': 60,
         'poll_sec': 2.0,
@@ -333,9 +336,12 @@ PROFILES: dict[str, dict[str, Any]] = {
     'aggressive': {
         'threshold': 0.68,
         'max_entry_price': 0.90,
-        'stake_usd': 5.0,
+        'stake_usd': 4.0,
         'trail_stop_pct': 0.18,
-        'exit_before_sec': 20,
+        'take_profit_pct': 0.20,
+        'hedge_ratio': 0.08,
+        'exit_before_sec': 30,
+        'emergency_exit_sec': 10,
         'min_entry_seconds_left': 60,
         'entry_timeout_min': 60,
         'poll_sec': 2.0,
@@ -355,8 +361,12 @@ def apply_profile(args: argparse.Namespace) -> argparse.Namespace:
         args.trail_stop_pct = float(prof.get('trail_stop_pct', 0.15))
     if args.take_profit_pct is None:
         args.take_profit_pct = float(prof.get('take_profit_pct', 0))
+    if args.hedge_ratio is None:
+        args.hedge_ratio = float(prof.get('hedge_ratio', 0))
     if args.exit_before_sec is None:
         args.exit_before_sec = int(prof['exit_before_sec'])
+    if args.emergency_exit_sec is None:
+        args.emergency_exit_sec = int(prof.get('emergency_exit_sec', 10))
     if args.min_entry_seconds_left is None:
         args.min_entry_seconds_left = int(prof['min_entry_seconds_left'])
     if args.entry_timeout_min is None:
@@ -388,8 +398,10 @@ def main():
     ap.add_argument('--max-entry-price', type=float, default=None, help='Skip entry if CLOB ask > this price (no upside)')
     ap.add_argument('--stake-usd', type=float, default=None)
     ap.add_argument('--trail-stop-pct', type=float, default=None, help='0.15 = trailing stop 15%% below peak')
-    ap.add_argument('--take-profit-pct', type=float, default=None, help='0=disabled (trail stop replaces both SL+TP)')
+    ap.add_argument('--take-profit-pct', type=float, default=None, help='0.20 = +20%% take-profit')
+    ap.add_argument('--hedge-ratio', type=float, default=None, help='0.10 = 10%% hedge on opposite side')
     ap.add_argument('--exit-before-sec', type=int, default=None)
+    ap.add_argument('--emergency-exit-sec', type=int, default=None, help='T-N seconds last-ditch FAK sell')
     ap.add_argument('--min-entry-seconds-left', type=int, default=None, help='Do not open if less seconds remain in current 5m slot')
     ap.add_argument('--entry-timeout-min', type=int, default=None)
     ap.add_argument('--poll-sec', type=float, default=None)
@@ -557,6 +569,37 @@ def main():
     print(f"  Market ends: {opened['market_end_iso']}")
     print(f"{'='*60}\n")
 
+    # Micro hedge: buy opposite side for insurance
+    hedge_opened = None
+    hedge_ratio = getattr(args, 'hedge_ratio', 0) or 0
+    if hedge_ratio > 0 and args.execute:
+        hedge_side = 'UP' if opened['side'] == 'DOWN' else 'DOWN'
+        hedge_notional = opened['cost_usdc'] * hedge_ratio
+        if hedge_notional >= 1.0:
+            try:
+                h_slug = opened['market_slug']
+                h_tid, h_price, h_info = resolve_token_id(h_slug, hedge_side)
+                if h_tid:
+                    from py_clob_client_v2.clob_types import MarketOrderArgs as MA, OrderType as OT2
+                    from py_clob_client_v2 import Side as S2
+                    h_signed = client.create_market_order(
+                        MA(token_id=h_tid, amount=round(hedge_notional, 2), side=S2.BUY, order_type=OT2.FAK),
+                        options=PartialCreateOrderOptions(tick_size='0.01'),
+                    ) if client else None
+                    if h_signed and client:
+                        h_result = client.post_order(h_signed)
+                        if isinstance(h_result, dict) and h_result.get('success'):
+                            hedge_opened = {
+                                'side': hedge_side,
+                                'token_id': h_tid,
+                                'notional': hedge_notional,
+                                'tx': (h_result.get('transactionsHashes') or [None])[0],
+                            }
+                            print(f"  [HEDGE] {hedge_side} ${hedge_notional:.2f} tx={str(hedge_opened['tx'])[:20]}...")
+            except Exception as e:
+                print(f"  [HEDGE] failed: {e}")
+    report['hedge'] = hedge_opened
+
     # monitor after open: trailing stop + on-chain GTC safety net
     end_ts = None
     try:
@@ -595,9 +638,14 @@ def main():
 
     close_reason = None
     net_fails = 0
+    emergency_sec = getattr(args, 'emergency_exit_sec', 10)
     while True:
         now = time.time()
         sec_left = end_ts - now
+        if now >= (end_ts - emergency_sec):
+            print(f'  [EMERGENCY] T-{emergency_sec}s last-ditch exit')
+            close_reason = f'emergency_exit_{emergency_sec}s'
+            break
         if now >= (end_ts - args.exit_before_sec):
             close_reason = f'time_exit_{args.exit_before_sec}s_before_end'
             break
@@ -815,9 +863,27 @@ def main():
     report['close_raw'] = out[-4000:]
     report['closed'] = closed
 
+    # Close hedge position if open
+    hedge_pnl = 0.0
+    if hedge_opened and client:
+        try:
+            from py_clob_client_v2.clob_types import MarketOrderArgs as MA, OrderType as OT2
+            from py_clob_client_v2 import Side as S2
+            h_signed = client.create_market_order(
+                MA(token_id=hedge_opened['token_id'], amount=100, side=S2.SELL, order_type=OT2.FAK),
+                options=PartialCreateOrderOptions(tick_size='0.01'),
+            )
+            h_result = client.post_order(h_signed)
+            if isinstance(h_result, dict) and h_result.get('success'):
+                h_revenue = float(h_result.get('makingAmount') or 0)
+                hedge_pnl = round(h_revenue - hedge_opened['notional'], 6)
+                print(f'  [HEDGE] closed, PnL=${hedge_pnl:+.2f}')
+        except Exception as e:
+            print(f'  [HEDGE] close failed: {e}')
+
     pnl = None
     if closed['close_usdc']:
-        pnl = round(closed['close_usdc'] - opened['cost_usdc'], 6)
+        pnl = round(closed['close_usdc'] - opened['cost_usdc'] + hedge_pnl, 6)
     report['realized_cashflow_pnl_usdc'] = pnl
     report['finished_at'] = ts_utc()
     report['result'] = 'done'

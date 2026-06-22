@@ -52,54 +52,60 @@ profiles:
     signal:
       trigger_source: "clob_best_ask"
       direction_rule: "follow_stronger_side_over_threshold"
-      threshold_price: 0.75
-      max_entry_price: 0.92
-      min_btc_move_usd: 40
+      threshold_price: 0.72
+      max_entry_price: 0.88
+      min_btc_move_usd: 30
     sizing:
       stake_mode: "fixed_or_cap"
-      stake_usd: 5
+      stake_usd: 4
       risk_per_trade_pct_equity: 8
       max_notional_usd: 8
       daily_max_loss_pct: 10
-      max_trades_per_day: 12
+      max_trades_per_day: 20
     hedge:
       enabled: true
-      trigger_side_price_gte: 0.95
-      trigger_seconds_left_lte: 45
-      hedge_share_of_main_pct: 3
-      hedge_notional_usd_min: 1
-      hedge_notional_usd_max: 2
+      hedge_ratio: 0.10
+      note: "10% micro-hedge on opposite side"
     trail_stop:
       enabled: true
-      trail_stop_pct: 0.15
-      note: "Starts at entry*(1-pct)=initial SL, rises with peak, locks profit"
+      trail_stop_pct: 0.13
+    take_profit:
+      enabled: true
+      take_profit_pct: 0.20
+    emergency_exit:
+      enabled: true
+      exit_sec: 10
+      note: "T-10s last-ditch FAK sell"
 
   aggressive:
     description: "More entries, earlier momentum catch, moderate stop. After optimization."
     signal:
       trigger_source: "clob_best_ask"
       direction_rule: "follow_stronger_side_over_threshold"
-      threshold_price: 0.70
-      max_entry_price: 0.92
+      threshold_price: 0.68
+      max_entry_price: 0.90
       min_btc_move_usd: 30
     sizing:
       stake_mode: "fixed_or_cap"
-      stake_usd: 5
+      stake_usd: 4
       risk_per_trade_pct_equity: 15
       max_notional_usd: 15
       daily_max_loss_pct: 15
       max_trades_per_day: 20
     hedge:
       enabled: true
-      trigger_side_price_gte: 0.93
-      trigger_seconds_left_lte: 50
-      hedge_share_of_main_pct: 5
-      hedge_notional_usd_min: 1
-      hedge_notional_usd_max: 3
+      hedge_ratio: 0.08
+      note: "8% micro-hedge on opposite side"
     trail_stop:
       enabled: true
-      trail_stop_pct: 0.20
-      note: "Starts at entry*(1-pct)=initial SL, rises with peak, locks profit"
+      trail_stop_pct: 0.18
+    take_profit:
+      enabled: true
+      take_profit_pct: 0.20
+    emergency_exit:
+      enabled: true
+      exit_sec: 10
+      note: "T-10s last-ditch FAK sell"
 
 runner_mapping:
   script: "skills/btc-5m-live/scripts/test_btc_5m_session_exit_sl.py"
