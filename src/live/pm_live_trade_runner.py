@@ -163,7 +163,7 @@ def open_position(args) -> dict:
         ot = OrderType.FAK if order_type == "FAK" else OrderType.GTC
 
         # Use trigger_price (CLOB ask) to set the buy limit — willing to pay up to this much
-        buy_price = min(0.99, max(0.01, trigger_price))
+        buy_price = round(min(0.99, max(0.01, trigger_price)), 2)
 
         signed = client.create_market_order(
             MarketOrderArgs(token_id=token_id, amount=max_notional, side=Side.BUY, price=buy_price, order_type=ot),
