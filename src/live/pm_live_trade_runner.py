@@ -138,6 +138,7 @@ def open_position(args) -> dict:
         risk_based = float(args.start_equity) * float(args.risk_frac)
         max_notional = min(max_notional, risk_based)
 
+    trigger_price = float(getattr(args, 'trigger_price', 0) or 0.5)
     order_type = os.getenv("PM_ORDER_TYPE", "FAK").upper()
 
     if not args.execute:
@@ -161,8 +162,11 @@ def open_position(args) -> dict:
 
         ot = OrderType.FAK if order_type == "FAK" else OrderType.GTC
 
+        # Use trigger_price (CLOB ask) to set the buy limit — willing to pay up to this much
+        buy_price = min(0.99, max(0.01, trigger_price))
+
         signed = client.create_market_order(
-            MarketOrderArgs(token_id=token_id, amount=max_notional, side=Side.BUY, price=0.5, order_type=ot),
+            MarketOrderArgs(token_id=token_id, amount=max_notional, side=Side.BUY, price=buy_price, order_type=ot),
             options=PartialCreateOrderOptions(tick_size="0.01"),
         )
         result = client.post_order(signed)
@@ -258,6 +262,7 @@ def main():
     ap.add_argument("--start-equity", type=float, default=None)
     ap.add_argument("--risk-frac", type=float, default=None)
     ap.add_argument("--max-notional-usd", type=float, default=None)
+    ap.add_argument("--trigger-price", type=float, default=None)
     ap.add_argument("--close-token-id", type=str, default=None)
     ap.add_argument("--close-shares", type=float, default=None)
     ap.add_argument("--close-limit-price", type=float, default=None)
