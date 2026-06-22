@@ -283,9 +283,10 @@ def get_side_price_from_slug(slug: str, side: str) -> Optional[float]:
 
 PROFILES: dict[str, dict[str, Any]] = {
     'conservative': {
-        'threshold': 0.70,
+        'threshold': 0.75,
+        'max_entry_price': 0.92,
         'stake_usd': 5.0,
-        'stop_loss_pct': 0.25,
+        'stop_loss_pct': 0.15,
         'exit_before_sec': 20,
         'min_entry_seconds_left': 60,
         'entry_timeout_min': 60,
@@ -293,8 +294,9 @@ PROFILES: dict[str, dict[str, Any]] = {
     },
     'aggressive': {
         'threshold': 0.70,
+        'max_entry_price': 0.92,
         'stake_usd': 5.0,
-        'stop_loss_pct': 0.30,
+        'stop_loss_pct': 0.20,
         'exit_before_sec': 20,
         'min_entry_seconds_left': 60,
         'entry_timeout_min': 60,
@@ -307,6 +309,8 @@ def apply_profile(args: argparse.Namespace) -> argparse.Namespace:
     prof = PROFILES.get(args.profile or 'conservative', PROFILES['conservative'])
     if args.threshold is None:
         args.threshold = float(prof['threshold'])
+    if args.max_entry_price is None:
+        args.max_entry_price = float(prof.get('max_entry_price', 1.0))
     if args.stake_usd is None:
         args.stake_usd = float(prof['stake_usd'])
     if args.stop_loss_pct is None:
@@ -334,6 +338,7 @@ def main():
     ap.add_argument('--repo', default=default_repo_path())
     ap.add_argument('--profile', choices=['conservative', 'aggressive'], default='conservative')
     ap.add_argument('--threshold', type=float, default=None)
+    ap.add_argument('--max-entry-price', type=float, default=None, help='Skip entry if CLOB ask > this price (no upside)')
     ap.add_argument('--stake-usd', type=float, default=None)
     ap.add_argument('--stop-loss-pct', type=float, default=None, help='0.30 means -30%% from entry price')
     ap.add_argument('--exit-before-sec', type=int, default=None)
@@ -350,6 +355,7 @@ def main():
         'params': {
             'profile': args.profile,
             'threshold': args.threshold,
+            'max_entry_price': args.max_entry_price,
             'stake_usd': args.stake_usd,
             'stop_loss_pct': args.stop_loss_pct,
             'exit_before_sec': args.exit_before_sec,
@@ -422,9 +428,10 @@ def main():
             })
 
             candidates: list[tuple[str, float]] = []
-            if up_ask is not None and float(up_ask) >= args.threshold:
+            max_entry = float(args.max_entry_price or 1.0)
+            if up_ask is not None and float(up_ask) >= args.threshold and float(up_ask) <= max_entry:
                 candidates.append(('UP', float(up_ask)))
-            if dn_ask is not None and float(dn_ask) >= args.threshold:
+            if dn_ask is not None and float(dn_ask) >= args.threshold and float(dn_ask) <= max_entry:
                 candidates.append(('DOWN', float(dn_ask)))
 
             if not candidates:
