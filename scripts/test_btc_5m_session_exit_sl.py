@@ -580,7 +580,7 @@ def main():
             close_reason = f'time_exit_{args.exit_before_sec}s_before_end'
             break
 
-        side_px = get_side_price_from_slug(opened['market_slug'], opened['side'])
+        side_px = clob_best_bid(opened['token_id'])
         report['last_side_price'] = side_px
         report['last_check_at'] = ts_utc()
 
