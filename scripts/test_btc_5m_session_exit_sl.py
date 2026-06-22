@@ -490,9 +490,12 @@ def main():
                 break
             else:
                 report['last_open_try'] = out[-2000:]
-                status_str = str(post.get('status', 'unknown'))
-                error_str = str(post.get('error', ''))
-                print(f"  -> ORDER FAILED: status={status_str} error={error_str[:120]}", flush=True)
+                if post and isinstance(post, dict):
+                    status_str = str(post.get('status', 'unknown'))
+                    error_str = str(post.get('error', ''))
+                    print(f"  -> ORDER FAILED: status={status_str} error={error_str[:120]}", flush=True)
+                else:
+                    print(f"  -> ORDER FAILED: no valid response from runner", flush=True)
                 print(f"  -> Raw: {out[-500:]}", flush=True)
         except Exception as e:
             report['attempts'].append({'ts': ts_utc(), 'status': 'error', 'error': str(e)})
