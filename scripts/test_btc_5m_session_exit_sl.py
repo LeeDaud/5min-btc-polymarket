@@ -323,8 +323,8 @@ PROFILES: dict[str, dict[str, Any]] = {
     'conservative': {
         'threshold': 0.72,
         'max_entry_price': 0.88,
-        'stake_usd': 3.0,
-        'trail_stop_pct': 0.10,
+        'stake_usd': 5.0,
+        'trail_stop_pct': 0.07,
         'take_profit_pct': 0.0,
         'hedge_ratio': 0.0,
         'exit_before_sec': 30,
@@ -337,8 +337,8 @@ PROFILES: dict[str, dict[str, Any]] = {
     'aggressive': {
         'threshold': 0.68,
         'max_entry_price': 0.90,
-        'stake_usd': 3.0,
-        'trail_stop_pct': 0.15,
+        'stake_usd': 5.0,
+        'trail_stop_pct': 0.10,
         'take_profit_pct': 0.0,
         'hedge_ratio': 0.0,
         'exit_before_sec': 30,
