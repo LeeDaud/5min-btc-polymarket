@@ -769,7 +769,8 @@ def main():
     side = opened.get('side', '?')
     entry = opened.get('entry_price', 0)
     reason = closed.get('close_reason', '?')
-    print(f'\nTRADE DONE | {side} entry=@{entry:.3f} PnL={pnl_str} exit={reason} tx={opened.get(\"open_tx\",\"?\")[:20]}...', flush=True)
+    tx_short = str(opened.get('open_tx', '?'))[:20]
+    print(f'\nTRADE DONE | {side} entry=@{entry:.3f} PnL={pnl_str} exit={reason} tx={tx_short}', flush=True)
 
 
 if __name__ == '__main__':
