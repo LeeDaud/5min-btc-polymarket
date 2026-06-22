@@ -486,11 +486,17 @@ def main():
                     'open_tx': (post.get('transactionsHashes') or [None])[0],
                 }
                 report['open_raw'] = out[-4000:]
+                print(f"  -> ORDER SUCCESS: {side} @ {entry_price:.4f}  tx={opened['open_tx']}", flush=True)
                 break
             else:
                 report['last_open_try'] = out[-2000:]
+                status_str = str(post.get('status', 'unknown'))
+                error_str = str(post.get('error', ''))
+                print(f"  -> ORDER FAILED: status={status_str} error={error_str[:120]}", flush=True)
+                print(f"  -> Raw: {out[-500:]}", flush=True)
         except Exception as e:
             report['attempts'].append({'ts': ts_utc(), 'status': 'error', 'error': str(e)})
+            print(f"  -> EXCEPTION: {e}", flush=True)
         time.sleep(args.poll_sec)
 
     if not opened:
