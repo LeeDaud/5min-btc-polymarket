@@ -222,7 +222,7 @@ def close_position(args) -> dict:
 
         if order_type == "FAK":
             signed = client.create_market_order(
-                MarketOrderArgs(token_id=token_id, amount=shares, side=Side.SELL, price=0.5, order_type=OrderType.FAK),
+                MarketOrderArgs(token_id=token_id, amount=shares, side=Side.SELL, price=0.01, order_type=OrderType.FAK),
                 options=PartialCreateOrderOptions(tick_size="0.01"),
             )
             result = client.post_order(signed)
