@@ -180,7 +180,7 @@ def open_position(args) -> dict:
             side=BUY,
             order_type=ot,
         ))
-        result = client.post_order(signed, order_type=ot)
+        result = client.post_order(signed)
 
         # Calculate entry price from fill
         entry_price = ref_price
@@ -246,7 +246,7 @@ def close_position(args) -> dict:
                 side=SELL,
                 order_type=ot,
             ))
-            result = client.post_order(signed, order_type=ot)
+            result = client.post_order(signed)
         else:
             # GTC limit sell
             price = limit_price or 0.01
@@ -256,7 +256,7 @@ def close_position(args) -> dict:
                 size=shares,
                 side=SELL,
             ))
-            result = client.post_order(signed, order_type=OrderType.GTC)
+            result = client.post_order(signed)
 
         close_skipped = None
         if isinstance(result, dict):
