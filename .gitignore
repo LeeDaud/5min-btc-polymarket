@@ -8,3 +8,4 @@ runtime/
 analysis/.backtest_state.json
 analysis/.optimize_state.json
 .api_creds.json
+.last_trade.json
