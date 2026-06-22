@@ -2,14 +2,20 @@
 """
 Backtest BTC 5-min Polymarket momentum strategy.
 Uses MEXC 1-min BTC klines for price data.
-Simulates entry/exit based on strategy rules.
+Supports incremental mode: only processes new 5-min slots since last run.
 """
 
 import requests
 import json
 import math
 import statistics
+import sys
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+# Allow running from repo root or analysis/ directly
+sys.path.insert(0, str(Path(__file__).parent))
+from state_manager import load_state, save_state, get_new_buckets, update_state, compute_cumulative_stats, reset_state
 
 UTC = timezone.utc
 
@@ -239,8 +245,24 @@ def simulate_slot(slot_candles, threshold=0.70, stop_loss_pct=0.25,
 
 
 def main():
+    # Parse args
+    reset = "--reset" in sys.argv
+
+    if reset:
+        reset_state()
+        print("State reset. Starting fresh.\n")
+
+    # Load persisted state
+    state = load_state()
+    last_bucket = state.get("last_bucket", 0)
+
     print("=" * 70)
     print("BTC 5-Minute Polymarket Momentum Strategy - Backtest")
+    if last_bucket > 0:
+        last_time = datetime.fromtimestamp(last_bucket, UTC).strftime('%Y-%m-%d %H:%M')
+        print(f"Incremental mode — resuming from {last_time}")
+    else:
+        print("First run — processing all available data")
     print("=" * 70)
 
     # Fetch BTC data
@@ -250,117 +272,120 @@ def main():
     print(f"    Range: {datetime.fromtimestamp(candles[0]['open_time']//1000, UTC)} → "
           f"{datetime.fromtimestamp(candles[-1]['open_time']//1000, UTC)}")
 
-    # Compute 5-min slots
-    slots = compute_5min_slots(candles)
-    print(f"    Grouped into {len(slots)} five-minute slots\n")
+    # Get only NEW completed slots since last run
+    new_slots = get_new_buckets(candles, last_bucket)
+    print(f"    {len(new_slots)} new completed slots since last run\n")
 
-    # Filter to only completed slots (closed = slot end is in the past)
-    now_ts = int(datetime.now(UTC).timestamp())
-    completed_slots = {}
-    for bucket, sc in slots.items():
-        if bucket + 300 < now_ts - 30:  # at least 30s past close
-            completed_slots[bucket] = sc
+    if not new_slots:
+        print("[2] No new slots to process.")
+        # Still print cumulative stats
+        cum = compute_cumulative_stats(state)
+        if cum["n_trades"] > 0:
+            print(f"\n    Cumulative: {cum['n_slots']} slots processed, "
+                  f"{cum['n_trades']} trades, "
+                  f"win rate {cum['win_rate']}%, "
+                  f"cumulative PnL {cum['cum_pnl']:+.2f}%")
+        else:
+            print("    No historical data yet. Waiting for completed slots...")
+        input("\nPress Enter to exit...")
+        return
 
-    print(f"    {len(completed_slots)} completed slots available for backtest\n")
-
-    # Calibrate: compute actual BTC 5-minute volatility from data
+    # Calibrate BTC 5-min volatility from new data
     five_min_returns = []
-    for bucket, sc in sorted(completed_slots.items()):
+    for bucket, sc in sorted(new_slots.items()):
         if len(sc) >= 3:
             ret = sc[-1]['close'] - sc[0]['open']
             five_min_returns.append(ret)
     btc_5min_std = statistics.stdev(five_min_returns) if len(five_min_returns) >= 5 else 70.0
     print(f"    Calibrated BTC 5-min std dev: ${btc_5min_std:.1f}\n")
 
-    # Run simulation on all completed slots
-    test_slots = dict(sorted(completed_slots.items()))
-    total_slots = len(test_slots)
+    print(f"[2] Processing {len(new_slots)} new slots...\n")
 
-    print(f"[2] Running backtest on {total_slots} completed slots...\n")
-
-    results = []
+    session_results = []
+    new_results_for_state = {}
     skipped = 0
-    for bucket in sorted(test_slots.keys()):
-        sc = test_slots[bucket]
+    latest_bucket = last_bucket
+
+    for bucket in sorted(new_slots.keys()):
+        sc = new_slots[bucket]
         slot_time = datetime.fromtimestamp(bucket, UTC)
         btc_open = sc[0]['open']
         btc_close = sc[-1]['close']
-        btc_move_total = btc_close - btc_open
 
         signal, result = simulate_slot(sc, btc_5min_std=btc_5min_std)
+        latest_bucket = max(latest_bucket, bucket)
 
         if result:
-            results.append(result)
-            direction_icon = "UP" if result['direction'] == 'UP' else "DN"
+            session_results.append(result)
+            # Store in state-compatible format
+            new_results_for_state[bucket] = {
+                "entered": True,
+                "direction": result["direction"],
+                "entry_price": result["entry_price_model"],
+                "exit_price": result["exit_price"],
+                "exit_reason": result["exit_reason"],
+                "pnl_pct": result["pnl_pct"],
+                "won": result["won"],
+            }
             win_mark = "W" if result['won'] else "L"
-            pnl_str = f"{result['pnl_pct']:+6.1f}%"
-            print(f"  {slot_time.strftime('%H:%M')} {direction_icon} {win_mark} "
+            print(f"  {slot_time.strftime('%H:%M')} {result['direction']} {win_mark} "
                   f"entry@{result['entry_price_model']:.3f} "
                   f"exit@{result['exit_price']:.3f} "
-                  f"({result['exit_reason']:12s}) | {pnl_str}")
+                  f"({result['exit_reason']:12s}) | {result['pnl_pct']:+6.1f}%")
         else:
             skipped += 1
+            new_results_for_state[bucket] = {"entered": False}
 
-    # Summary statistics
+    # Update and save state
+    state = update_state(state, new_results_for_state, latest_bucket)
+    save_state(state)
+
+    # --- Session stats ---
     print(f"\n{'='*70}")
-    print(f"RESULTS SUMMARY — {total_slots} slots, {skipped} skipped, {len(results)} trades")
+    print(f"SESSION — {len(new_slots)} slots, {skipped} skipped, {len(session_results)} trades")
     print(f"{'='*70}")
-    if results:
-        n_trades = len(results)
-        n_wins = sum(1 for r in results if r['won'])
-        n_losses = n_trades - n_wins
-        win_rate = n_wins / n_trades * 100 if n_trades > 0 else 0
-
-        pnl_pcts = [r['pnl_pct'] for r in results]
-        pnl_per_dollar = [r['pnl_per_dollar'] for r in results]
+    if session_results:
+        pnl_pcts = [r['pnl_pct'] for r in session_results]
         avg_pnl = statistics.mean(pnl_pcts)
-        total_pnl = sum(pnl_pcts)
-        median_pnl = statistics.median(pnl_pcts)
+        cum_pnl = sum(pnl_pcts)
+        n_wins = sum(1 for r in session_results if r['won'])
+        n_sl = sum(1 for r in session_results if 'stop_loss' in str(r.get('exit_reason', '')))
+        print(f"  Win rate: {n_wins}/{len(session_results)} ({n_wins/len(session_results)*100:.1f}%)")
+        print(f"  Stop losses: {n_sl}")
+        print(f"  Avg return: {avg_pnl:+.2f}%")
+        print(f"  Cumulative: {cum_pnl:+.2f}%")
 
-        n_stop_loss = sum(1 for r in results if 'stop_loss' in str(r.get('exit_reason', '')))
+    # --- Cumulative stats ---
+    cum = compute_cumulative_stats(state)
+    print(f"\n{'='*70}")
+    print(f"CUMULATIVE — {cum['n_slots']} slots total, {cum['n_trades']} trades")
+    print(f"{'='*70}")
+    if cum["n_trades"] > 0:
+        print(f"  Win rate:          {cum['n_wins']}/{cum['n_trades']} ({cum['win_rate']}%)")
+        print(f"  Stop-loss hits:    {cum['n_stop_loss']}")
+        print(f"  Avg return/trade:  {cum['avg_pnl']:+.2f}%")
+        print(f"  Median return:     {cum['median_pnl']:+.2f}%")
+        print(f"  Cumulative return: {cum['cum_pnl']:+.2f}%")
+        print(f"  Sharpe-like:       {cum['sharpe']:.3f}")
+        print(f"  Max drawdown:      {cum['max_dd']:+.2f}%")
 
-        # Avg by exit reason
-        exit_stats = {}
-        for r in results:
-            reason = r.get('exit_reason', 'unknown')
-            exit_stats.setdefault(reason, []).append(r['pnl_pct'])
-        exit_summary = {k: (len(v), statistics.mean(v)) for k, v in exit_stats.items()}
-
-        print(f"")
-        print(f"  Win rate:          {n_wins}/{n_trades} ({win_rate:.1f}%)")
-        print(f"  Stop-loss hits:    {n_stop_loss}")
-        print(f"  Avg return/trade:  {avg_pnl:+.2f}%")
-        print(f"  Median return:     {median_pnl:+.2f}%")
-        print(f"  Cumulative return: {total_pnl:+.2f}%")
-        print(f"  Avg $ PnL per $1:  ${statistics.mean(pnl_per_dollar):+.4f}")
-
-        # Best/worst
-        best = max(results, key=lambda r: r['pnl_pct'])
-        worst = min(results, key=lambda r: r['pnl_pct'])
-        print(f"  Best trade:        {best['pnl_pct']:+.1f}% (entry {best['entry_price_model']:.3f})")
-        print(f"  Worst trade:       {worst['pnl_pct']:+.1f}% (entry {worst['entry_price_model']:.3f})")
-
-        # PnL distribution
-        buckets = [(-100, -20), (-20, -5), (-5, 0), (0, 3), (3, 8), (8, 15), (15, 100)]
-        print(f"\n  PnL distribution:")
-        for lo, hi in buckets:
-            count = sum(1 for p in pnl_pcts if lo <= p < hi)
-            if count > 0:
-                bar = '#' * max(1, count)
-                print(f"    [{lo:+4d}% ~ {hi:+4d}%): {count:3d} trades  {bar}")
-
-        print(f"\n  By exit reason:")
-        for reason, (count, avg) in sorted(exit_summary.items()):
-            print(f"    {reason:20s}: {count:2d} trades, avg {avg:+.2f}%")
-
-        # Sharpe-like ratio (return / std, annualized not applicable here)
-        if len(pnl_pcts) >= 3:
-            pnl_std = statistics.stdev(pnl_pcts)
-            if pnl_std > 0:
-                sharpe_like = avg_pnl / pnl_std
-                print(f"\n  Return/Std ratio:  {sharpe_like:+.2f} (higher = better risk-adjusted)")
-    else:
-        print("  No trades generated")
+        if len(session_results) > 0:
+            pnl_pcts_all = [cum['n_trades']]  # placeholder
+            # PnL distribution from state
+            pnl_dist = {}
+            for r in state["slot_results"].values():
+                if r.get("entered"):
+                    p = r["pnl_pct"]
+                    pnl_dist.setdefault(p, 0)
+            # Recompute buckets
+            all_pnl = [r["pnl_pct"] for r in state["slot_results"].values() if r.get("entered")]
+            buckets = [(-100, -20), (-20, -5), (-5, 0), (0, 3), (3, 8), (8, 15), (15, 100)]
+            print(f"\n  PnL distribution:")
+            for lo, hi in buckets:
+                count = sum(1 for p in all_pnl if lo <= p < hi)
+                if count > 0:
+                    bar = '#' * max(1, count)
+                    print(f"    [{lo:+4d}% ~ {hi:+4d}%): {count:3d} trades  {bar}")
 
     print(f"\n{'='*70}")
     print("Model assumptions:")
@@ -369,6 +394,7 @@ def main():
     print("  - Stop loss: -25% from entry price")
     print("  - Data: MEXC 1-min BTC klines, no CLOB order book history")
     print(f"{'='*70}")
+    print(f"\nTip: run with --reset to clear history and start fresh.")
 
 
 if __name__ == '__main__':

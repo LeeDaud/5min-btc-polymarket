@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .env
 .env.*
+analysis/.backtest_state.json
+analysis/.optimize_state.json

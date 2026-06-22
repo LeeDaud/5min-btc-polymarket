@@ -2,21 +2,47 @@
 """
 Parameter optimization for BTC 5-min Polymarket momentum strategy.
 Grid search over threshold, max_entry_price, stop_loss, min_btc_move.
-Evaluates cumulative return, win rate, Sharpe-like ratio, max consecutive loss.
+Incremental: accumulates slot data over runs, re-optimizes on full dataset.
 """
 
 import requests
 import json
 import math
 import statistics
+import sys
 from datetime import datetime, timezone, timedelta
 from itertools import product
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from state_manager import load_state, save_state, reset_state
 
 UTC = timezone.utc
+OPT_STATE_FILE = Path(__file__).parent / ".optimize_state.json"
+
+
+def load_opt_state():
+    """Load optimization state — includes accumulated candle data for all processed slots."""
+    if OPT_STATE_FILE.exists():
+        try:
+            with open(OPT_STATE_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return {"last_bucket": 0, "slots": {}, "total_processed": 0}
+
+
+def save_opt_state(st):
+    with open(OPT_STATE_FILE, "w") as f:
+        json.dump(st, f, indent=2)
+
+
+def bucket_5m(ts):
+    return ts - (ts % 300)
 
 
 # ============================================================
-# Data layer (same as backtest_btc5m.py)
+# Data layer
 # ============================================================
 
 def get_btc_klines(n_candles=500):
@@ -258,30 +284,99 @@ def run_grid_search(slots, btc_5min_std, param_grid):
 
 
 def main():
+    reset = "--reset" in sys.argv
+    if reset:
+        reset_state()
+        if OPT_STATE_FILE.exists():
+            OPT_STATE_FILE.unlink()
+        print("State reset. Starting fresh.\n")
+
     print("=" * 90)
     print("BTC 5-MIN STRATEGY — PARAMETER OPTIMIZATION (GRID SEARCH)")
     print("=" * 90)
 
-    # Fetch data
+    # Load accumulated state
+    opt_state = load_opt_state()
+    last_bucket = opt_state.get("last_bucket", 0)
+    stored_slots = opt_state.get("slots", {})
+
+    if last_bucket > 0 and stored_slots:
+        last_time = datetime.fromtimestamp(last_bucket, UTC).strftime('%Y-%m-%d %H:%M')
+        print(f"Incremental mode — {len(stored_slots)} slots stored, resuming from {last_time}")
+
+    # Fetch new BTC data
     print("\n[1] Fetching BTC data...")
     candles = get_btc_klines(500)
     print(f"    {len(candles)} candles")
 
-    slots = compute_5min_slots(candles)
-    now_ts = int(datetime.now(UTC).timestamp())
-    completed_slots = {}
-    for b, sc in slots.items():
-        if b + 300 < now_ts - 30:
-            completed_slots[b] = sc
+    # Group into 5-min slots
+    all_slots = {}
+    for c in candles:
+        b = bucket_5m(c['open_time'] // 1000)
+        all_slots.setdefault(b, []).append(c)
 
-    # Calibrate volatility
+    now_ts = int(datetime.now(UTC).timestamp())
+
+    # Identify new completed slots (not yet stored)
+    new_count = 0
+    for b, sc in sorted(all_slots.items()):
+        if len(sc) < 3:
+            continue
+        if b + 300 >= now_ts - 30:
+            continue  # not yet completed
+        if str(b) in stored_slots:
+            continue  # already stored
+        if b <= last_bucket and last_bucket > 0:
+            continue
+
+        # Store candle data for this slot
+        stored_slots[str(b)] = {
+            "btc_start": sc[0]['open'],
+            "closes": [c['close'] for c in sc],
+            "highs": [c['high'] for c in sc],
+            "lows": [c['low'] for c in sc],
+            "open_times": [c['open_time'] // 1000 for c in sc],
+        }
+        opt_state["last_bucket"] = max(opt_state["last_bucket"], b)
+        new_count += 1
+
+    opt_state["total_processed"] = len(stored_slots)
+    save_opt_state(opt_state)
+
+    print(f"    {new_count} new slots added, {len(stored_slots)} total in dataset")
+
+    if len(stored_slots) < 10:
+        print(f"    Need at least 10 slots for meaningful optimization. Exiting.")
+        input("\nPress Enter to exit...")
+        return
+
+    # Reconstruct candle data for simulation
+    def slot_from_stored(data):
+        """Reconstruct slot candle list from stored data."""
+        candles = []
+        for i in range(len(data["closes"])):
+            candles.append({
+                'open_time': data["open_times"][i] * 1000,
+                'open': data["btc_start"] if i == 0 else data["closes"][i-1],
+                'high': data["highs"][i],
+                'low': data["lows"][i],
+                'close': data["closes"][i],
+            })
+        return candles
+
+    # Build slot dict for grid search
+    completed_slots = {}
+    for b_str, data in stored_slots.items():
+        completed_slots[int(b_str)] = slot_from_stored(data)
+
+    # Calibrate volatility from all stored data
     five_min_returns = []
     for b, sc in sorted(completed_slots.items()):
         if len(sc) >= 3:
             five_min_returns.append(sc[-1]['close'] - sc[0]['open'])
     btc_5min_std = statistics.stdev(five_min_returns) if len(five_min_returns) >= 5 else 70.0
 
-    print(f"    {len(completed_slots)} slots, BTC 5-min σ = ${btc_5min_std:.1f}\n")
+    print(f"    BTC 5-min σ = ${btc_5min_std:.1f} (from {len(five_min_returns)} slots)\n")
 
     # Parameter grid
     param_grid = {
@@ -291,7 +386,7 @@ def main():
         'min_btc_move':     [30, 40, 50, 60],
     }
 
-    print(f"[2] Running grid search...")
+    print(f"[2] Running grid search on {len(completed_slots)} slots...")
     all_results = run_grid_search(completed_slots, btc_5min_std, param_grid)
 
     # Top 20
@@ -374,7 +469,8 @@ def main():
                       f"trades={avg_trades:5.0f}  {bar}")
 
     print(f"\n{'='*90}")
-    print("Done.")
+    print(f"Dataset: {len(stored_slots)} slots accumulated. Run again to add new data.")
+    print(f"Tip: run with --reset to clear history and start fresh.")
     print(f"{'='*90}")
 
 
