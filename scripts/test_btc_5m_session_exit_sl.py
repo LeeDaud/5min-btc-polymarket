@@ -699,6 +699,7 @@ def main():
                     except Exception:
                         pass
                 trail_stop = new_trail
+                print(f"  [TRAIL] lock at {trail_stop:.4f} (+{(trail_stop - opened['entry_price'])/opened['entry_price']*100:.1f}%)", flush=True)
 
             pnl_pct = (side_px - opened['entry_price']) / opened['entry_price'] * 100
             h_msg = '^' if side_px == highest_price else ''
