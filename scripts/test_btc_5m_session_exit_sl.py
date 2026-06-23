@@ -442,6 +442,19 @@ def main():
     deadline = time.time() + args.entry_timeout_min * 60
     opened = None
 
+    # Prevent re-entering the same 5-min slot
+    traded_slugs = set()
+    last_trade_file = Path(__file__).resolve().parents[1] / '.last_trade.json'
+    try:
+        if last_trade_file.exists():
+            with open(last_trade_file) as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    for t in data:
+                        traded_slugs.add(t.get('slug', ''))
+    except Exception:
+        pass
+
     while time.time() < deadline:
         try:
             m = resolve_active_current_5m_market()
@@ -496,6 +509,9 @@ def main():
                 'seconds_left': sec_left,
                 'min_spread': min_spread,
             })
+
+            if slug in traded_slugs:
+                continue
 
             print(f"[{ts_utc()}] {slug} UP_ask={up_ask} DOWN_ask={dn_ask} sec_left={sec_left:.0f}", flush=True)
 
@@ -935,6 +951,17 @@ def main():
     pnl_pct = (pnl / opened['cost_usdc'] * 100) if pnl and opened.get('cost_usdc') else 0
     tx_short = str(opened.get('open_tx', '?'))[:20]
     print(f'\nTRADE DONE | {side} entry=@{entry:.3f} close=@{close_price:.3f} PnL={pnl_str}({pnl_pct:+.1f}%) exit={reason}', flush=True)
+
+    # Save trade to prevent re-entry in same slot
+    try:
+        sorted_slugs = list(traded_slugs)
+        sorted_slugs.append(opened.get('market_slug', ''))
+        # Keep only last 5
+        sorted_slugs = sorted_slugs[-5:]
+        with open(last_trade_file, 'w') as f:
+            json.dump([{'slug': s} for s in sorted_slugs], f)
+    except Exception:
+        pass
 
 
 if __name__ == '__main__':
