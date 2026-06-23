@@ -333,6 +333,8 @@ PROFILES: dict[str, dict[str, Any]] = {
         'stake_usd': 5.0,
         'trail_stop_pct': 0.07,
         'take_profit_pct': 0.0,
+        'tp_partial_pct': 0.20,
+        'tp_partial_ratio': 0.50,
         'hedge_ratio': 0.0,
         'exit_before_sec': 40,
         'emergency_exit_sec': 15,
@@ -347,6 +349,8 @@ PROFILES: dict[str, dict[str, Any]] = {
         'stake_usd': 5.0,
         'trail_stop_pct': 0.10,
         'take_profit_pct': 0.0,
+        'tp_partial_pct': 0.25,
+        'tp_partial_ratio': 0.50,
         'hedge_ratio': 0.0,
         'exit_before_sec': 40,
         'emergency_exit_sec': 15,
@@ -368,6 +372,10 @@ def apply_profile(args: argparse.Namespace) -> argparse.Namespace:
         args.stake_usd = float(prof['stake_usd'])
     if args.trail_stop_pct is None:
         args.trail_stop_pct = float(prof.get('trail_stop_pct', 0.15))
+    if args.tp_partial_pct is None:
+        args.tp_partial_pct = float(prof.get('tp_partial_pct', 0))
+    if args.tp_partial_ratio is None:
+        args.tp_partial_ratio = float(prof.get('tp_partial_ratio', 0.5))
     if args.take_profit_pct is None:
         args.take_profit_pct = float(prof.get('take_profit_pct', 0))
     if args.hedge_ratio is None:
@@ -407,6 +415,8 @@ def main():
     ap.add_argument('--max-entry-price', type=float, default=None, help='Skip entry if CLOB ask > this price (no upside)')
     ap.add_argument('--stake-usd', type=float, default=None)
     ap.add_argument('--trail-stop-pct', type=float, default=None, help='0.15 = trailing stop 15%% below peak')
+    ap.add_argument('--tp-partial-pct', type=float, default=None, help='0.20 = partial TP at +20%% PnL')
+    ap.add_argument('--tp-partial-ratio', type=float, default=None, help='0.50 = sell 50%% at partial TP')
     ap.add_argument('--take-profit-pct', type=float, default=None, help='0.20 = +20%% take-profit')
     ap.add_argument('--hedge-ratio', type=float, default=None, help='0.10 = 10%% hedge on opposite side')
     ap.add_argument('--exit-before-sec', type=int, default=None)
@@ -663,6 +673,7 @@ def main():
     print(f"  Trail Stop: {trail_pct*100:.0f}% below peak  Initial: {trail_stop:.4f}  Cooldown: 10s  FailLimit: {getattr(args, 'net_fail_limit', 2)}  ExitBefore: {args.exit_before_sec}s")
 
     close_reason = None
+    partial_tp_done = False
     net_fails = 0
     emergency_sec = getattr(args, 'emergency_exit_sec', 10)
     try:
@@ -731,6 +742,36 @@ def main():
             if tp_price and side_px is not None and side_px >= tp_price:
                 close_reason = f"take_profit_{int(args.take_profit_pct * 100)}pct"
                 break
+
+            # Partial take-profit: lock profit on part of position
+            tp_partial_pct = getattr(args, 'tp_partial_pct', 0) or 0
+            tp_partial_ratio = getattr(args, 'tp_partial_ratio', 0.5) or 0.5
+            if tp_partial_pct > 0 and not partial_tp_done and side_px is not None:
+                if pnl_pct >= tp_partial_pct * 100:
+                    close_shares = opened['shares'] * tp_partial_ratio
+                    print(f"  [PARTIAL TP] +{pnl_pct:.1f}% reached, closing {tp_partial_ratio*100:.0f}% ({close_shares:.4f} shares)", flush=True)
+                    try:
+                        out_p, objs_p = run_close(args.repo, opened['market_slug'], opened['token_id'], close_shares, args.execute, close_order_type='FAK')
+                        last_p = objs_p[-1] if objs_p else {}
+                        post_p = last_p.get('order_post_result') or {}
+                        if post_p.get('success') and str(post_p.get('status','')).lower() == 'matched':
+                            close_rev = float(post_p.get('takingAmount') or 0)
+                            opened['shares'] -= close_shares
+                            opened['cost_usdc'] -= close_rev * (opened['cost_usdc'] / (opened['shares'] + close_shares))
+                            if opened['shares'] < 0:
+                                opened['shares'] = 0
+                            partial_tp_done = True
+                            report['partial_tp'] = {'shares_closed': close_shares, 'revenue': close_rev}
+                            print(f"  [PARTIAL TP] done, remaining {opened['shares']:.4f} shares", flush=True)
+                            # Also cancel/update GTC safety for remaining shares
+                            if gtc_safety_id and client:
+                                try: client.cancel(gtc_safety_id)
+                                except: pass
+                                gtc_safety_id = None
+                        else:
+                            print(f"  [PARTIAL TP] order failed, status={post_p.get('status','?')}")
+                    except Exception as e:
+                        print(f"  [PARTIAL TP] failed: {e}")
         time.sleep(args.poll_sec)
     except Exception as e:
         print(f'  [CRASH] Recovery: {e}', flush=True)
