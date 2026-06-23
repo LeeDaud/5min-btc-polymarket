@@ -649,7 +649,8 @@ def main():
     close_reason = None
     net_fails = 0
     emergency_sec = getattr(args, 'emergency_exit_sec', 10)
-    while True:
+    try:
+     while True:
         now = time.time()
         sec_left = end_ts - now
         if now >= (end_ts - emergency_sec):
@@ -714,7 +715,9 @@ def main():
                 close_reason = f"take_profit_{int(args.take_profit_pct * 100)}pct"
                 break
         time.sleep(args.poll_sec)
-
+    except Exception as e:
+        print(f'  [CRASH] Recovery: {e}', flush=True)
+        close_reason = f'crash_recovery_{str(e)[:30]}'
     # Cancel safety GTC before close-out
     if gtc_safety_id and client:
         try:
