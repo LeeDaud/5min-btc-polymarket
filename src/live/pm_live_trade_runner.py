@@ -164,7 +164,7 @@ def open_position(args) -> dict:
 
         # Use trigger_price (CLOB ask) to set the buy limit - willing to pay up to this much
         result = client.create_and_post_market_order(
-            MarketOrderArgs(token_id=token_id, amount=max_notional, side=Side.BUY, order_type=ot, price=trigger_price),
+            MarketOrderArgs(token_id=token_id, amount=max_notional, side=Side.BUY, order_type=ot, price=round(trigger_price * 1.02, 4)),
             options=PartialCreateOrderOptions(tick_size="0.01"),
             order_type=ot,
         )
