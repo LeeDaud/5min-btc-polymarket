@@ -623,6 +623,7 @@ def main():
     cooldown_until = time.time() + 10
 
     # Place on-chain GTC safety sell at initial trail stop price
+    client = auth_clob_client()  # init before GTC safety + close logic
     gtc_safety_id: Optional[str] = None
     gtc_safety_price = 0.0
     if client and opened['shares'] > 0 and args.execute:
@@ -726,7 +727,6 @@ def main():
     out = ''
     fallback_used = None
     force_close_used = None
-    client = auth_clob_client()
 
     for i in range(max(1, int(args.close_retry_max))):
         out, objs = run_close(
