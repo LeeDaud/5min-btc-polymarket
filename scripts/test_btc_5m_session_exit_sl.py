@@ -902,13 +902,15 @@ def main():
     report['finished_at'] = ts_utc()
     report['result'] = 'done'
 
-    # Compact summary instead of full JSON dump
+    # Compact summary
     pnl_str = f'${pnl:+.2f}' if pnl else 'N/A'
     side = opened.get('side', '?')
     entry = opened.get('entry_price', 0)
     reason = closed.get('close_reason', '?')
+    close_price = closed['close_usdc'] / closed['close_shares'] if closed.get('close_usdc') and closed.get('close_shares') else 0
+    pnl_pct = (pnl / opened['cost_usdc'] * 100) if pnl and opened.get('cost_usdc') else 0
     tx_short = str(opened.get('open_tx', '?'))[:20]
-    print(f'\nTRADE DONE | {side} entry=@{entry:.3f} PnL={pnl_str} exit={reason} tx={tx_short}', flush=True)
+    print(f'\nTRADE DONE | {side} entry=@{entry:.3f} close=@{close_price:.3f} PnL={pnl_str}({pnl_pct:+.1f}%) exit={reason}', flush=True)
 
 
 if __name__ == '__main__':
