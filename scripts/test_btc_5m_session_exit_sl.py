@@ -656,7 +656,7 @@ def main():
     highest_price = opened['entry_price']
     trail_stop = highest_price * (1.0 - trail_pct)
     tp_price = opened['entry_price'] * (1.0 + args.take_profit_pct) if args.take_profit_pct > 0 else None
-    cooldown_until = time.time() + 10
+    cooldown_until = time.time() + 5
 
     # Place on-chain GTC safety sell at initial trail stop price
     client = auth_clob_client()  # init before GTC safety + close logic
@@ -680,7 +680,7 @@ def main():
 
     report['trail_stop_pct'] = trail_pct
     report['initial_trail_stop'] = trail_stop
-    print(f"  Trail Stop: {trail_pct*100:.0f}% below peak  Initial: {trail_stop:.4f}  Cooldown: 10s  FailLimit: {getattr(args, 'net_fail_limit', 2)}  ExitBefore: {args.exit_before_sec}s")
+    print(f"  Trail Stop: {trail_pct*100:.0f}% below peak  Initial: {trail_stop:.4f}  Cooldown: 5s  FailLimit: {getattr(args, 'net_fail_limit', 2)}  ExitBefore: {args.exit_before_sec}s")
 
     close_reason = None
     partial_tp_done = False
