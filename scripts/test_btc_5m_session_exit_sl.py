@@ -55,10 +55,17 @@ def bucket_5m(ts: int) -> int:
 
 
 def fetch_event(slug: str) -> Optional[dict[str, Any]]:
-    r = requests.get('https://gamma-api.polymarket.com/events', params={'slug': slug}, timeout=12)
-    r.raise_for_status()
-    arr = r.json()
-    return arr[0] if arr else None
+    for attempt in range(3):
+        try:
+            r = requests.get('https://gamma-api.polymarket.com/events', params={'slug': slug}, timeout=8)
+            r.raise_for_status()
+            arr = r.json()
+            return arr[0] if arr else None
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(1)
+            else:
+                raise
 
 
 def resolve_active_current_5m_market() -> Optional[dict[str, Any]]:
