@@ -164,7 +164,7 @@ def open_position(args) -> dict:
 
         # Use trigger_price (CLOB ask) to set the buy limit - willing to pay up to this much
         result = client.create_and_post_market_order(
-            MarketOrderArgs(token_id=token_id, amount=max_notional, side=Side.BUY, order_type=ot),
+            MarketOrderArgs(token_id=token_id, amount=max_notional, side=Side.BUY, order_type=ot, price=trigger_price),
             options=PartialCreateOrderOptions(tick_size="0.01"),
             order_type=ot,
         )
@@ -220,7 +220,7 @@ def close_position(args) -> dict:
 
         if order_type == "FAK":
             result = client.create_and_post_market_order(
-                MarketOrderArgs(token_id=token_id, amount=shares, side=Side.SELL, order_type=OrderType.FAK),
+                MarketOrderArgs(token_id=token_id, amount=shares, side=Side.SELL, order_type=OrderType.FAK, price=limit_price or 0),
                 options=PartialCreateOrderOptions(tick_size="0.01"),
                 order_type=OrderType.FAK,
             )

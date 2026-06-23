@@ -201,31 +201,41 @@ def _save_cached_creds(creds):
     except Exception:
         pass
 
+_auth_client_cache: Optional[ClobClient] = None
+
 def auth_clob_client(clob_base: str = 'https://clob.polymarket.com') -> Optional[ClobClient]:
+    global _auth_client_cache
     try:
+        if _auth_client_cache is not None:
+            try:
+                _auth_client_cache.get_server_time()
+                return _auth_client_cache
+            except Exception:
+                _auth_client_cache = None
+
         key = os.getenv('PM_PRIVATE_KEY') or ''
         funder = os.getenv('PM_DEPOSIT_WALLET') or os.getenv('PM_FUNDER') or None
         sig = int(os.getenv('PM_SIGNATURE_TYPE', '3'))
         if not key:
             return None
 
-        # Try cached creds first
         cached = _load_cached_creds()
         if cached:
             try:
                 creds = ApiCreds(api_key=cached['api_key'], api_secret=cached['api_secret'], api_passphrase=cached['api_passphrase'])
                 c = ClobClient(host=clob_base, chain_id=POLYGON, key=key, signature_type=sig, funder=funder, creds=creds)
                 _ = c.get_server_time()
+                _auth_client_cache = c
                 return c
             except Exception:
-                pass  # cached creds invalid, re-derive
+                pass
 
-        # Derive new creds and cache them
         c = ClobClient(host=clob_base, chain_id=POLYGON, key=key, signature_type=sig, funder=funder)
         creds = c.create_or_derive_api_key()
         if creds:
             _save_cached_creds(creds)
             c = ClobClient(host=clob_base, chain_id=POLYGON, key=key, signature_type=sig, funder=funder, creds=creds)
+            _auth_client_cache = c
             return c
         return None
     except Exception:
@@ -330,7 +340,7 @@ PROFILES: dict[str, dict[str, Any]] = {
     'conservative': {
         'threshold': 0.72,
         'max_entry_price': 0.88,
-        'stake_usd': 5.0,
+        'stake_usd': 1.0,
         'trail_stop_pct': 0.07,
         'take_profit_pct': 0.0,
         'tp_partial_pct': 0.20,
@@ -346,7 +356,7 @@ PROFILES: dict[str, dict[str, Any]] = {
     'aggressive': {
         'threshold': 0.68,
         'max_entry_price': 0.90,
-        'stake_usd': 5.0,
+        'stake_usd': 1.0,
         'trail_stop_pct': 0.10,
         'take_profit_pct': 0.0,
         'tp_partial_pct': 0.25,
@@ -776,13 +786,6 @@ def main():
     except Exception as e:
         print(f'  [CRASH] Recovery: {e}', flush=True)
         close_reason = f'crash_recovery_{str(e)[:30]}'
-    # Cancel safety GTC before close-out
-    if gtc_safety_id and client:
-        try:
-            client.cancel(gtc_safety_id)
-        except Exception:
-            pass
-
     close_debug: list[dict[str, Any]] = []
     close_obj: dict[str, Any] = {}
     out = ''
@@ -790,6 +793,15 @@ def main():
     force_close_used = None
 
     for i in range(max(1, int(args.close_retry_max))):
+        # Refresh best_bid each iteration for realistic limit
+        close_limit = None
+        try:
+            bb = clob_best_bid(opened['token_id'])
+            if bb and bb > 0:
+                close_limit = round(bb * 0.90, 4)
+        except Exception:
+            pass
+        print(f"  [CLOSE #{i+1}] shares={opened['shares']:.4f} best_bid={bb} limit={close_limit}", flush=True)
         out, objs = run_close(
             args.repo,
             opened['market_slug'],
@@ -797,6 +809,7 @@ def main():
             opened['shares'],
             args.execute,
             close_order_type='FAK',
+            close_limit_price=close_limit,
         )
         close_obj = objs[-1] if objs else {}
         post = close_obj.get('order_post_result') or {}
@@ -950,6 +963,13 @@ def main():
         'close_usdc': close_usdc,
         'close_skipped': close_obj.get('close_skipped'),
     }
+    # Cancel safety GTC only after close succeeds
+    if gtc_safety_id and client and closed['close_success']:
+        try:
+            client.cancel(gtc_safety_id)
+        except Exception:
+            pass
+
     report['close_debug'] = close_debug
     if fallback_used:
         report['close_fallback'] = fallback_used
