@@ -334,8 +334,8 @@ PROFILES: dict[str, dict[str, Any]] = {
         'trail_stop_pct': 0.07,
         'take_profit_pct': 0.0,
         'hedge_ratio': 0.0,
-        'exit_before_sec': 30,
-        'emergency_exit_sec': 10,
+        'exit_before_sec': 40,
+        'emergency_exit_sec': 15,
         'min_entry_seconds_left': 60,
         'entry_timeout_min': 60,
         'poll_sec': 1.0,
@@ -348,8 +348,8 @@ PROFILES: dict[str, dict[str, Any]] = {
         'trail_stop_pct': 0.10,
         'take_profit_pct': 0.0,
         'hedge_ratio': 0.0,
-        'exit_before_sec': 30,
-        'emergency_exit_sec': 10,
+        'exit_before_sec': 40,
+        'emergency_exit_sec': 15,
         'min_entry_seconds_left': 60,
         'entry_timeout_min': 60,
         'poll_sec': 1.0,
@@ -851,6 +851,30 @@ def main():
                 close_obj = close_obj3
                 out = out3
                 if post3.get('success') is True and status3 == 'matched':
+                    break
+
+                # Last resort: dump sell at any price
+                dump_px = 0.05
+                dump_close_used = {'type': 'DUMP_GTC', 'price': dump_px}
+                out4, objs4 = run_close(
+                    args.repo, opened['market_slug'], opened['token_id'],
+                    opened['shares'], args.execute,
+                    close_order_type='GTC', close_limit_price=dump_px,
+                )
+                close_obj4 = objs4[-1] if objs4 else {}
+                post4 = close_obj4.get('order_post_result') or {}
+                status4 = str(post4.get('status') or '').lower()
+                close_debug.append({
+                    'ts': ts_utc(), 'attempt': i + 1,
+                    'order_type': 'DUMP_GTC',
+                    'status': status4,
+                    'close_skipped': str(close_obj4.get('close_skipped') or ''),
+                    'limit_price': dump_px,
+                })
+                close_obj = close_obj4
+                out = out4
+                force_close_used = dump_close_used
+                if post4.get('success') is True and status4 == 'matched':
                     break
 
         time.sleep(float(args.close_retry_delay_sec))
