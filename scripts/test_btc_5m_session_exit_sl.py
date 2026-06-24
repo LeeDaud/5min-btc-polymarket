@@ -1258,6 +1258,13 @@ def _save_trade_log(report: dict):
         json.dump(report, f, indent=2, ensure_ascii=False, default=str)
     print(f'[LOG] saved to logs/{fname}', flush=True)
 
+def _next_slot_sec() -> float:
+    """Seconds until the start of the next 5-min boundary + 10s buffer."""
+    now = int(time.time())
+    bucket = now - (now % 300)
+    next_start = bucket + 300 + 10  # T+10s into next window
+    return max(1, next_start - now)
+
 if __name__ == '__main__':
     while True:
         _clear_screen()
@@ -1272,5 +1279,6 @@ if __name__ == '__main__':
         except Exception as e:
             print(f'\n[FATAL] {e}', flush=True)
             time.sleep(5)
-        print(f'\n[RESTART] Next cycle in 3s...\n', flush=True)
-        time.sleep(3)
+        wait = _next_slot_sec()
+        print(f'\n[RESTART] Next cycle at {ts_local()} (in {wait:.0f}s)...\n', flush=True)
+        time.sleep(wait)
