@@ -68,15 +68,19 @@ class BtcDataFeed:
         self._klines_cache: list[Candle1m] = []
         self._klines_ts: float = 0
         self._cache_ttl = 60.0
+        self._consecutive_errors: int = 0
+        self._max_consecutive_errors: int = 5
         self._last_error: Optional[str] = None
 
     def fetch_price(self) -> Optional[float]:
         try:
             r = requests.get(self.TICKER_URL, timeout=4)
             r.raise_for_status()
+            self._consecutive_errors = 0
             self._last_error = None
             return float(r.json()["price"])
         except Exception as e:
+            self._consecutive_errors += 1
             self._last_error = str(e)
             return None
 
@@ -100,11 +104,13 @@ class BtcDataFeed:
                 ))
             self._klines_cache = candles
             self._klines_ts = now
+            self._consecutive_errors = 0
             self._last_error = None
             return candles
         except Exception as e:
+            self._consecutive_errors += 1
             self._last_error = str(e)
-            return self._klines_cache
+            return self._klines_cache  # return stale cache rather than nothing
 
     def get_window_open(self, bucket_ts: int) -> Optional[float]:
         candles = self.fetch_klines()
@@ -117,7 +123,7 @@ class BtcDataFeed:
         return candles[0].open if candles else None
 
     def is_healthy(self) -> bool:
-        return self._last_error is None
+        return self._consecutive_errors < self._max_consecutive_errors
 
 
 # ============================================================

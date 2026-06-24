@@ -694,41 +694,45 @@ def main():
 
             # ===== BTC signal quality check =====
             signal_result = None
-            if btc_feed is not None and btc_feed.is_healthy():
-                btc_price = btc_feed.fetch_price()
-                candles = btc_feed.fetch_klines()
-                window_open = btc_feed.get_window_open(int(time.time()) - (int(time.time()) % 300))
-                if btc_price is not None and window_open is not None and candles:
-                    signal_result = evaluate_signal(
-                        current_price=btc_price,
-                        window_open=window_open,
-                        candles=candles,
-                        side=side,
-                        config=btc_signal_config,
-                        seconds_left=sec_left,
-                    )
-                    if not signal_result.passed:
-                        print(f"  -> BTC REJECT ({signal_result.reason}) "
-                              f"delta={signal_result.window_delta_pct:+.3f}% "
+            if btc_feed is not None:
+                if btc_feed.is_healthy():
+                    btc_price = btc_feed.fetch_price()
+                    candles = btc_feed.fetch_klines()
+                    window_open = btc_feed.get_window_open(int(time.time()) - (int(time.time()) % 300))
+                    if btc_price is not None and window_open is not None and candles:
+                        signal_result = evaluate_signal(
+                            current_price=btc_price,
+                            window_open=window_open,
+                            candles=candles,
+                            side=side,
+                            config=btc_signal_config,
+                            seconds_left=sec_left,
+                        )
+                        if not signal_result.passed:
+                            print(f"  -> BTC REJECT ({signal_result.reason}) "
+                                  f"delta={signal_result.window_delta_pct:+.3f}% "
+                                  f"tier={signal_result.delta_tier.label} "
+                                  f"conf={signal_result.confidence:.0f}", flush=True)
+                            report['attempts'].append({
+                                'ts': ts_utc(), 'slug': slug, 'side': side,
+                                'status': 'skip_btc_signal',
+                                'reason': signal_result.reason,
+                                'window_delta_pct': round(signal_result.window_delta_pct, 4),
+                                'delta_tier': signal_result.delta_tier.label,
+                                'confidence': round(signal_result.confidence, 1),
+                            })
+                            time.sleep(args.poll_sec)
+                            continue
+                        print(f"  -> BTC OK delta={signal_result.window_delta_pct:+.3f}% "
                               f"tier={signal_result.delta_tier.label} "
-                              f"conf={signal_result.confidence:.0f}", flush=True)
-                        report['attempts'].append({
-                            'ts': ts_utc(), 'slug': slug, 'side': side,
-                            'status': 'skip_btc_signal',
-                            'reason': signal_result.reason,
-                            'window_delta_pct': round(signal_result.window_delta_pct, 4),
-                            'delta_tier': signal_result.delta_tier.label,
-                            'confidence': round(signal_result.confidence, 1),
-                        })
-                        time.sleep(args.poll_sec)
-                        continue
-                    print(f"  -> BTC OK delta={signal_result.window_delta_pct:+.3f}% "
-                          f"tier={signal_result.delta_tier.label} "
-                          f"mom={signal_result.micro_momentum_pass} "
-                          f"atr={signal_result.atr_pass} "
-                          f"conf={signal_result.confidence:.0f}%", flush=True)
+                              f"mom={signal_result.micro_momentum_pass} "
+                              f"atr={signal_result.atr_pass} "
+                              f"conf={signal_result.confidence:.0f}%", flush=True)
+                    else:
+                        print(f"  -> BTC data unavailable, bypassing filter", flush=True)
                 else:
-                    print(f"  -> BTC data unavailable, bypassing signal filter", flush=True)
+                    err = btc_feed._last_error or 'unknown'
+                    print(f"  -> BTC feed unhealthy ({err}), bypassing filter", flush=True)
 
             # ===== Dynamic position sizing =====
             entry_stake = args.stake_usd
