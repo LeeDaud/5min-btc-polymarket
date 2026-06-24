@@ -979,15 +979,12 @@ def main():
     force_close_used = None
 
     for i in range(max(1, int(args.close_retry_max))):
-        # Refresh best_bid each iteration for realistic limit
-        close_limit = None
+        bb = None
         try:
             bb = clob_best_bid(opened['token_id'])
-            if bb and bb > 0:
-                close_limit = round(bb * 0.90, 4)
         except Exception:
             pass
-        print(f"  [CLOSE #{i+1}] shares={opened['shares']:.4f} best_bid={bb} limit={close_limit}", flush=True)
+        print(f"  [CLOSE #{i+1}] shares={opened['shares']:.4f} best_bid={bb}", flush=True)
         out, objs = run_close(
             args.repo,
             opened['market_slug'],
@@ -995,7 +992,6 @@ def main():
             opened['shares'],
             args.execute,
             close_order_type='FAK',
-            close_limit_price=close_limit,
         )
         close_obj = objs[-1] if objs else {}
         post = close_obj.get('order_post_result') or {}
