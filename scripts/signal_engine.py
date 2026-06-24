@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """
 BTC signal quality engine for 5-min Polymarket momentum strategy.
-Provides: Binance data feed, window delta, micro-momentum, ATR filter,
-composite confidence scoring, and dynamic position sizing.
-
-All signal gates default to disabled for backward compatibility.
+Active gates: window delta tier + pulse detection.
 """
-
 import time
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import requests
@@ -131,10 +127,6 @@ class BtcDataFeed:
 # ============================================================
 # Signal calculations (pure functions, independently testable)
 # ============================================================
-
-def bucket_5m_eng(ts: int) -> int:
-    return ts - (ts % 300)
-
 
 def compute_window_delta(current_price: float, window_open: float) -> float:
     if window_open <= 0:

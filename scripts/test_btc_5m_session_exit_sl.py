@@ -19,7 +19,7 @@ from py_clob_client_v2.constants import POLYGON
 from py_clob_client_v2.clob_types import ApiCreds
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from signal_engine import BtcDataFeed, evaluate_signal, compute_position_size, SignalResult
+from signal_engine import BtcDataFeed, evaluate_signal, SignalResult, compute_position_size
 
 UTC = dt.timezone.utc
 CST = dt.timezone(dt.timedelta(hours=8))  # Shanghai
