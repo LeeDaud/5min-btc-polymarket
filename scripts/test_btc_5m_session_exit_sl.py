@@ -759,42 +759,55 @@ def main():
                 )
                 print(f"  -> Dynamic sizing: ${entry_stake:.2f} (conf={signal_result.confidence:.0f}%)")
 
-            out, objs = run_open(args.repo, slug, side, entry_stake, args.execute, trigger_price)
-            post = None
-            runner = None
-            for o in objs:
-                if isinstance(o, dict) and 'order_post_result' in o:
-                    runner = o
-                    post = o.get('order_post_result') or {}
-            if post and post.get('success') is True and str(post.get('status', '')).lower() == 'matched':
-                token_id = str(runner.get('token_id') or (up_t if side == 'UP' else dn_t))
-                shares = float(post.get('takingAmount') or 0)
-                cost = float(post.get('makingAmount') or 0)
-                entry_price = float(runner.get('entry_price') or trigger_price)
-                opened = {
-                    'opened_at': ts_utc(),
-                    'market_slug': slug,
-                    'market_end_iso': end_iso,
-                    'side': side,
-                    'token_id': token_id,
-                    'entry_price': entry_price,
-                    'shares': shares,
-                    'cost_usdc': cost,
-                    'open_order_id': post.get('orderID'),
-                    'open_tx': (post.get('transactionsHashes') or [None])[0],
-                }
-                report['open_raw'] = out[-4000:]
-                print(f"  -> ORDER SUCCESS: {side} @ {entry_price:.4f}  tx={opened['open_tx']}", flush=True)
-                break
-            else:
-                report['last_open_try'] = out[-2000:]
-                if post and isinstance(post, dict):
-                    status_str = str(post.get('status', 'unknown'))
-                    error_str = str(post.get('error', ''))
-                    print(f"  -> ORDER FAILED: status={status_str} error={error_str[:120]}", flush=True)
+            opened = None
+            for attempt in range(2):
+                if attempt > 0:
+                    print(f"  -> RETRY open...", flush=True)
+                    time.sleep(1.5)
+                out, objs = run_open(args.repo, slug, side, entry_stake, args.execute, trigger_price)
+                post = None
+                runner = None
+                for o in objs:
+                    if isinstance(o, dict) and 'order_post_result' in o:
+                        runner = o
+                        post = o.get('order_post_result') or {}
+                if post and post.get('success') is True and str(post.get('status', '')).lower() == 'matched':
+                    token_id = str(runner.get('token_id') or (up_t if side == 'UP' else dn_t))
+                    shares = float(post.get('takingAmount') or 0)
+                    cost = float(post.get('makingAmount') or 0)
+                    entry_price = float(runner.get('entry_price') or trigger_price)
+                    opened = {
+                        'opened_at': ts_utc(),
+                        'market_slug': slug,
+                        'market_end_iso': end_iso,
+                        'side': side,
+                        'token_id': token_id,
+                        'entry_price': entry_price,
+                        'shares': shares,
+                        'cost_usdc': cost,
+                        'open_order_id': post.get('orderID'),
+                        'open_tx': (post.get('transactionsHashes') or [None])[0],
+                    }
+                    report['open_raw'] = out[-4000:]
+                    print(f"  -> ORDER SUCCESS: {side} @ {entry_price:.4f}  tx={opened['open_tx']}", flush=True)
+                    break
                 else:
-                    print(f"  -> ORDER FAILED: no valid response from runner", flush=True)
-                print(f"  -> Raw: {out[-500:]}", flush=True)
+                    if attempt == 0:
+                        # First failure — will retry
+                        err = str(post.get('error', ''))[:80] if post else 'no response'
+                        print(f"  -> ORDER FAILED (attempt 1/2): {err}", flush=True)
+                        continue
+                    # Second failure — give up
+                    report['last_open_try'] = out[-2000:]
+                    if post and isinstance(post, dict):
+                        status_str = str(post.get('status', 'unknown'))
+                        error_str = str(post.get('error', ''))
+                        print(f"  -> ORDER FAILED (attempt 2/2): status={status_str} error={error_str[:120]}", flush=True)
+                    else:
+                        print(f"  -> ORDER FAILED: no valid response from runner", flush=True)
+                    print(f"  -> Raw: {out[-500:]}", flush=True)
+                if opened:
+                    break
         except Exception as e:
             report['attempts'].append({'ts': ts_utc(), 'status': 'error', 'error': str(e)})
             print(f"  -> EXCEPTION: {e}", flush=True)
