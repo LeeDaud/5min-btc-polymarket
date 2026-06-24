@@ -360,12 +360,12 @@ PROFILES: dict[str, dict[str, Any]] = {
         'entry_timeout_min': 60,
         'poll_sec': 1.0,
         'net_fail_limit': 2,
-        # BTC signal quality
+        # BTC signal quality: Delta + Pulse only
         'enable_btc_signal': True,
         'btc_delta_min_tier': 'WEAK',
-        'btc_require_momentum': True,
-        'btc_atr_multiplier': 1.5,
-        'btc_min_confidence': 30.0,
+        'btc_require_momentum': False,
+        'btc_atr_multiplier': 0,
+        'btc_min_confidence': 0,
         # Dynamic sizing
         'enable_dynamic_sizing': False,
         'max_position_usd': 5.0,
@@ -387,12 +387,12 @@ PROFILES: dict[str, dict[str, Any]] = {
         'entry_timeout_min': 60,
         'poll_sec': 1.0,
         'net_fail_limit': 2,
-        # BTC signal quality (looser)
+        # BTC signal quality: Delta + Pulse only
         'enable_btc_signal': True,
         'btc_delta_min_tier': 'WEAK',
         'btc_require_momentum': False,
-        'btc_atr_multiplier': 2.0,
-        'btc_min_confidence': 25.0,
+        'btc_atr_multiplier': 0,
+        'btc_min_confidence': 0,
         # Dynamic sizing
         'enable_dynamic_sizing': False,
         'max_position_usd': 5.0,
@@ -606,10 +606,7 @@ def main():
         try:
             btc_feed = BtcDataFeed()
             _ = btc_feed.fetch_klines()  # pre-warm cache
-            print(f"  [BTC] Signal filters enabled: delta>={btc_signal_config['window_delta_min_tier']} "
-                  f"momentum={btc_signal_config['require_micro_momentum']} "
-                  f"atr_mult={btc_signal_config['atr_filter_multiplier']} "
-                  f"min_conf={btc_signal_config['min_confidence']:.0f}%")
+            print(f"  [BTC] Filters: delta>={btc_signal_config['window_delta_min_tier']} + pulse")
         except Exception as e:
             print(f"  [WARN] BTC data feed init failed: {e}. Continuing without BTC filters.")
             btc_feed = None
@@ -731,10 +728,7 @@ def main():
                             continue
                         print(f"  -> BTC OK delta={signal_result.window_delta_pct:+.3f}% "
                               f"tier={signal_result.delta_tier.label} "
-                              f"mom={signal_result.micro_momentum_pass} "
-                              f"atr={signal_result.atr_pass} "
-                              f"pulse={signal_result.pulse_pass}"
-                              f" conf={signal_result.confidence:.0f}%", flush=True)
+                              f"pulse={signal_result.pulse_pass}", flush=True)
                     else:
                         print(f"  -> BTC REJECT: data unavailable, skip entry", flush=True)
                         report['attempts'].append({
