@@ -1217,6 +1217,108 @@ def main():
         pnl = round(closed['close_usdc'] - opened['cost_usdc'] + hedge_pnl, 6)
     report['realized_cashflow_pnl_usdc'] = pnl
     report['finished_at'] = ts_utc()
+    # ===== Reversal: after stop-loss, check opposite direction =====
+    reversal_report: dict[str, Any] = {}
+    sec_left_now = end_ts - time.time() if end_ts else 0
+    if close_reason and close_reason.startswith('trail_stop_') and sec_left_now >= args.min_entry_seconds_left:
+        opp_side = 'DOWN' if opened['side'] == 'UP' else 'UP'
+        print(f'\n  [REVERSAL] stop-loss detected, checking {opp_side}... (T-{sec_left_now:.0f}s)', flush=True)
+        up_ask2, dn_ask2 = None, None
+        try:
+            pub2 = ClobClient(host='https://clob.polymarket.com', chain_id=POLYGON)
+            up_book = pub2.get_order_book(str(up_t))
+            dn_book = pub2.get_order_book(str(dn_t))
+            _, up_ask2 = _best_bid_ask(up_book)
+            _, dn_ask2 = _best_bid_ask(dn_book)
+        except Exception:
+            pass
+
+        opp_ask = up_ask2 if opp_side == 'UP' else dn_ask2
+        max_entry = float(args.max_entry_price or 1.0)
+        if opp_ask is not None and opp_ask >= args.threshold and opp_ask <= max_entry:
+            # BTC signal check
+            rev_signal_ok = True
+            if btc_feed is not None and btc_feed.is_healthy():
+                btc_price = btc_feed.fetch_price()
+                candles = btc_feed.fetch_klines()
+                window_open = btc_feed.get_window_open(int(time.time()) - (int(time.time()) % 300))
+                if btc_price and window_open and candles:
+                    rev_result = evaluate_signal(btc_price, window_open, candles, opp_side, btc_signal_config, sec_left_now)
+                    if not rev_result.passed:
+                        rev_signal_ok = False
+                        print(f'  [REVERSAL] BTC REJECT: {rev_result.reason}', flush=True)
+                else:
+                    rev_signal_ok = False
+            else:
+                rev_signal_ok = False  # require BTC confirmation for reversal
+
+            if rev_signal_ok:
+                print(f'  [REVERSAL] ENTER {opp_side} ask={opp_ask:.4f}', flush=True)
+                hr_out, hr_objs = run_open(args.repo, slug, opp_side, args.stake_usd, args.execute, opp_ask)
+                hr_post = None
+                hr_runner = None
+                for o in hr_objs:
+                    if isinstance(o, dict) and 'order_post_result' in o:
+                        hr_runner = o
+                        hr_post = o.get('order_post_result') or {}
+                if hr_post and hr_post.get('success') and str(hr_post.get('status','')).lower() == 'matched':
+                    rev_entry_price = float(hr_runner.get('entry_price') or opp_ask)
+                    rev_shares = float(hr_post.get('takingAmount') or 0)
+                    rev_cost = float(hr_post.get('makingAmount') or 0)
+                    rev_highest = rev_entry_price
+                    rev_stop = rev_entry_price * (1.0 - args.trail_stop_pct)
+                    print(f'  [REVERSAL] OPENED {opp_side} @ {rev_entry_price:.4f} stop={rev_stop:.4f}', flush=True)
+                    # Monitor reversal until close
+                    rev_close_reason = None
+                    while True:
+                        time.sleep(args.poll_sec)
+                        rev_now = time.time()
+                        rev_sec_left = end_ts - rev_now
+                        if rev_sec_left <= args.emergency_exit_sec:
+                            rev_close_reason = 'reversal_emergency'
+                            break
+                        if rev_sec_left <= args.exit_before_sec:
+                            rev_close_reason = 'reversal_time'
+                            break
+                        try:
+                            rev_px = clob_best_bid(hr_runner.get('token_id') or (up_t if opp_side == 'UP' else dn_t))
+                        except Exception:
+                            continue
+                        if rev_px:
+                            if rev_px > rev_highest:
+                                rev_highest = rev_px
+                                rev_stop = rev_highest * (1.0 - args.trail_stop_pct)
+                            r_pnl_pct = (rev_px - rev_entry_price) / rev_entry_price * 100
+                            r_pnl_usd = rev_cost * r_pnl_pct / 100
+                            print(f'  [REV] {opp_side} in={rev_entry_price:.4f} now={rev_px:.4f} PnL={r_pnl_usd:+.2f}$ ({r_pnl_pct:+.1f}%) T-{rev_sec_left:.0f}s', flush=True)
+                            if rev_px <= rev_stop:
+                                rev_close_reason = 'reversal_stop'
+                                break
+                    # Close reversal
+                    for ri in range(3):
+                        rr_out, rr_objs = run_close(args.repo, slug, hr_runner.get('token_id') or '', rev_shares, args.execute, close_order_type='FAK')
+                        rr_last = rr_objs[-1] if rr_objs else {}
+                        rr_post = rr_last.get('order_post_result') or {}
+                        if rr_post.get('success') and str(rr_post.get('status','')).lower() == 'matched':
+                            break
+                        time.sleep(1.0)
+                    rev_close_usdc = float(rr_post.get('takingAmount') or 0)
+                    rev_pnl = round(rev_close_usdc - rev_cost, 6)
+                    rev_pnl_pct = (rev_pnl / rev_cost * 100) if rev_cost else 0
+                    print(f'  [REVERSAL] DONE PnL=${rev_pnl:+.2f}({rev_pnl_pct:+.1f}%) exit={rev_close_reason}', flush=True)
+                    reversal_report = {
+                        'side': opp_side, 'entry_price': rev_entry_price,
+                        'cost': rev_cost, 'revenue': rev_close_usdc,
+                        'pnl': rev_pnl, 'exit_reason': rev_close_reason,
+                    }
+                    pnl = (pnl or 0) + rev_pnl
+                else:
+                    print(f'  [REVERSAL] order failed', flush=True)
+        else:
+            print(f'  [REVERSAL] no valid {opp_side} signal (ask={opp_ask})', flush=True)
+    report['reversal'] = reversal_report
+    # ===== End reversal =====
+
     report['result'] = 'done'
 
     # Compact summary
@@ -1227,7 +1329,11 @@ def main():
     close_price = closed['close_usdc'] / closed['close_shares'] if closed.get('close_usdc') and closed.get('close_shares') else 0
     pnl_pct = (pnl / opened['cost_usdc'] * 100) if pnl and opened.get('cost_usdc') else 0
     tx_short = str(opened.get('open_tx', '?'))[:20]
-    print(f'\nTRADE DONE | {side} entry=@{entry:.3f} close=@{close_price:.3f} PnL={pnl_str}({pnl_pct:+.1f}%) exit={reason}', flush=True)
+    if reversal_report:
+        rev_info = f' | REV {reversal_report.get("side","?")} PnL=${reversal_report.get("pnl",0):+.2f}'
+        print(f'\nTRADE DONE | {side} entry=@{entry:.3f} close=@{close_price:.3f} PnL={pnl_str}({pnl_pct:+.1f}%) exit={reason}{rev_info}', flush=True)
+    else:
+        print(f'\nTRADE DONE | {side} entry=@{entry:.3f} close=@{close_price:.3f} PnL={pnl_str}({pnl_pct:+.1f}%) exit={reason}', flush=True)
 
     # Save trade to prevent re-entry in same slot
     try:
