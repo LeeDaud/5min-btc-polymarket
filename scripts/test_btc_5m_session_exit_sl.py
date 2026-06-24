@@ -1252,11 +1252,28 @@ def _clear_screen():
 def _save_trade_log(report: dict):
     log_dir = Path(__file__).resolve().parents[1] / 'logs'
     log_dir.mkdir(exist_ok=True)
-    ts = dt.datetime.now(UTC).strftime('%Y%m%d_%H%M%S')
-    fname = f"trade_{report.get('opened',{}).get('side','NONE')}_{ts}.json"
-    with open(log_dir / fname, 'w') as f:
-        json.dump(report, f, indent=2, ensure_ascii=False, default=str)
-    print(f'[LOG] saved to logs/{fname}', flush=True)
+    opened = report.get('opened', {})
+    closed = report.get('closed', {})
+    pnl = report.get('realized_cashflow_pnl_usdc') or 0
+    cost = opened.get('cost_usdc', 0) or 0
+    pnl_pct = (pnl / cost * 100) if cost else 0
+    entry_price = opened.get('entry_price', 0)
+    entry_ts = opened.get('opened_at', '?')
+    # Calculate exit price
+    close_shares = float(closed.get('close_shares', 0))
+    close_usdc = float(closed.get('close_usdc', 0))
+    exit_price = close_usdc / close_shares if close_shares else 0
+    tx = str(opened.get('open_tx', '') or '')[:16]
+    line = (
+        f"{entry_ts} | {opened.get('side','?')} | "
+        f"in=@{entry_price:.4f} ${cost:.2f} | "
+        f"out=@{exit_price:.4f} ${close_usdc:.2f} | "
+        f"PnL=${pnl:+.2f}({pnl_pct:+.1f}%) | "
+        f"tx={tx}"
+    )
+    with open(log_dir / 'trades.log', 'a') as f:
+        f.write(line + '\n')
+    print(f'[LOG] {line}', flush=True)
 
 def _next_slot_sec() -> float:
     """Seconds until the start of the next 5-min boundary + 10s buffer."""
