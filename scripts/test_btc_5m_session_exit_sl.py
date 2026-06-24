@@ -722,8 +722,7 @@ def main():
                         if not signal_result.passed:
                             print(f"  -> BTC REJECT ({signal_result.reason}) "
                                   f"delta={signal_result.window_delta_pct:+.3f}% "
-                                  f"tier={signal_result.delta_tier.label} "
-                                  f"conf={signal_result.confidence:.0f}", flush=True)
+                                  f"tier={signal_result.delta_tier.label}", flush=True)
                             report['attempts'].append({
                                 'ts': ts_utc(), 'slug': slug, 'side': side,
                                 'status': 'skip_btc_signal',
