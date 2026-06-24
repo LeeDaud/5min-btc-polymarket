@@ -1370,13 +1370,17 @@ def _save_trade_log(report: dict):
     close_usdc = float(closed.get('close_usdc', 0))
     exit_price = close_usdc / close_shares if close_shares else 0
     tx = str(opened.get('open_tx', '') or '')[:16]
+    side = opened.get('side', '?')
     line = (
-        f"{entry_ts} | {opened.get('side','?')} | "
-        f"in=@{entry_price:.4f} ${cost:.2f} | "
+        f"{entry_ts} | {side} | in=@{entry_price:.4f} ${cost:.2f} | "
         f"out=@{exit_price:.4f} ${close_usdc:.2f} | "
-        f"PnL=${pnl:+.2f}({pnl_pct:+.1f}%) | "
-        f"tx={tx}"
+        f"PnL=${pnl:+.2f}({pnl_pct:+.1f}%) | tx={tx}"
     )
+    rev = report.get('reversal', {})
+    if rev:
+        rev_pnl = rev.get('pnl', 0)
+        rev_pct = (rev_pnl / rev.get('cost', 1) * 100) if rev.get('cost') else 0
+        line += f" | REV {rev.get('side','?')} PnL=${rev_pnl:+.2f}({rev_pct:+.1f}%)"
     with open(log_dir / 'trades.log', 'a') as f:
         f.write(line + '\n')
     print(f'[LOG] {line}', flush=True)
