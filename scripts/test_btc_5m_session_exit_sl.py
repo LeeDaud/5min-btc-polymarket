@@ -956,10 +956,18 @@ def main():
                 print(f"  [TRAIL] lock at {trail_stop:.4f} (+{(trail_stop - opened['entry_price'])/opened['entry_price']*100:.1f}%)", flush=True)
 
             pnl_pct = (side_px - opened['entry_price']) / opened['entry_price'] * 100
-            h_msg = '^' if side_px == highest_price else ''
-            cool = '(cool)' if now < cooldown_until else ''
-            safe = 'GTC' if gtc_safety_id else ''
-            print(f"[{ts_utc()}] price={side_px:.4f}{h_msg}  PnL={pnl_pct:+.1f}%  trail_stop={trail_stop:.4f}  {cool}{safe} exit_in={sec_left:.0f}s", flush=True)
+            pnl_usd = opened['cost_usdc'] * pnl_pct / 100
+            dist_to_stop = (side_px - trail_stop) / trail_stop * 100 if side_px else 0
+            # Compact position summary with profit bar
+            bar_len = 20
+            fill = int((pnl_pct + 15) / 30 * bar_len) if pnl_pct >= -15 else 0
+            fill = max(0, min(bar_len, fill))
+            bar = '|' + '█' * fill + '░' * (bar_len - fill) + '|'
+            print(f"  [{ts_utc()}] "
+                  f"{opened['side']} @{opened['entry_price']:.3f} → {side_px:.4f}  "
+                  f"PnL={pnl_usd:+.2f}$ ({pnl_pct:+.1f}%)  "
+                  f"stop={trail_stop:.4f}({dist_to_stop:+.0f}% away)  "
+                  f"T-{sec_left:.0f}s  {bar}", flush=True)
 
         if now >= cooldown_until:
             if side_px is not None and side_px <= trail_stop:
