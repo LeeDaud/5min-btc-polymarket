@@ -729,10 +729,24 @@ def main():
                               f"atr={signal_result.atr_pass} "
                               f"conf={signal_result.confidence:.0f}%", flush=True)
                     else:
-                        print(f"  -> BTC data unavailable, bypassing filter", flush=True)
+                        print(f"  -> BTC REJECT: data unavailable, skip entry", flush=True)
+                        report['attempts'].append({
+                            'ts': ts_utc(), 'slug': slug, 'side': side,
+                            'status': 'skip_btc_signal',
+                            'reason': 'btc_data_unavailable',
+                        })
+                        time.sleep(args.poll_sec)
+                        continue
                 else:
                     err = btc_feed._last_error or 'unknown'
-                    print(f"  -> BTC feed unhealthy ({err}), bypassing filter", flush=True)
+                    print(f"  -> BTC REJECT: feed unhealthy ({err}), skip entry", flush=True)
+                    report['attempts'].append({
+                        'ts': ts_utc(), 'slug': slug, 'side': side,
+                        'status': 'skip_btc_signal',
+                        'reason': f'btc_feed_unhealthy',
+                    })
+                    time.sleep(args.poll_sec)
+                    continue
 
             # ===== Dynamic position sizing =====
             entry_stake = args.stake_usd
