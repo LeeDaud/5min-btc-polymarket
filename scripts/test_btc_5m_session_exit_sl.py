@@ -1228,16 +1228,37 @@ def main():
     try:
         sorted_slugs = list(traded_slugs)
         sorted_slugs.append(opened.get('market_slug', ''))
-        # Keep only last 5
         sorted_slugs = sorted_slugs[-5:]
         with open(last_trade_file, 'w') as f:
             json.dump([{'slug': s} for s in sorted_slugs], f)
     except Exception:
         pass
 
+    # Auto-save trade log
+    try:
+        _save_trade_log(report)
+    except Exception:
+        pass
+
+
+def _clear_screen():
+    os.system('cls' if sys.platform == 'win32' else 'clear')
+
+def _save_trade_log(report: dict):
+    log_dir = Path(__file__).resolve().parents[1] / 'logs'
+    log_dir.mkdir(exist_ok=True)
+    ts = dt.datetime.now(UTC).strftime('%Y%m%d_%H%M%S')
+    fname = f"trade_{report.get('opened',{}).get('side','NONE')}_{ts}.json"
+    with open(log_dir / fname, 'w') as f:
+        json.dump(report, f, indent=2, ensure_ascii=False, default=str)
+    print(f'[LOG] saved to logs/{fname}', flush=True)
 
 if __name__ == '__main__':
     while True:
+        _clear_screen()
+        print(f'{"="*50}')
+        print(f'BTC 5m Live — {dt.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")} UTC')
+        print(f'{"="*50}\n')
         try:
             main()
         except KeyboardInterrupt:
@@ -1245,5 +1266,6 @@ if __name__ == '__main__':
             break
         except Exception as e:
             print(f'\n[FATAL] {e}', flush=True)
-        print(f'[RESTART] Next cycle in 3s...\n', flush=True)
+            time.sleep(5)
+        print(f'\n[RESTART] Next cycle in 3s...\n', flush=True)
         time.sleep(3)
