@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from signal_engine import BtcDataFeed, evaluate_signal, compute_position_size, SignalResult
 
 UTC = dt.timezone.utc
+CST = dt.timezone(dt.timedelta(hours=8))  # Shanghai
 
 
 def now_utc() -> dt.datetime:
@@ -30,6 +31,10 @@ def now_utc() -> dt.datetime:
 
 def ts_utc() -> str:
     return now_utc().isoformat().replace('+00:00', 'Z')
+
+
+def ts_local() -> str:
+    return dt.datetime.now(CST).strftime('%H:%M:%S')
 
 
 def parse_json_objects(text: str) -> list[dict[str, Any]]:
@@ -666,7 +671,7 @@ def main():
             if slug in traded_slugs:
                 continue
 
-            print(f"[{ts_utc()}] {slug} UP_ask={up_ask} DOWN_ask={dn_ask} sec_left={sec_left:.0f}", flush=True)
+            print(f"[{ts_local()}] {slug} UP_ask={up_ask} DOWN_ask={dn_ask} sec_left={sec_left:.0f}", flush=True)
 
             candidates: list[tuple[str, float]] = []
             max_entry = float(args.max_entry_price or 1.0)
@@ -820,7 +825,7 @@ def main():
     if not opened:
         report['finished_at'] = ts_utc()
         report['result'] = 'no_entry_timeout'
-        print(f'[{ts_utc()}] TIMEOUT - no valid entry signal found', flush=True)
+        print(f'[{ts_local()}] TIMEOUT - no valid entry signal found', flush=True)
         return
 
     report['opened'] = opened
@@ -1257,7 +1262,7 @@ if __name__ == '__main__':
     while True:
         _clear_screen()
         print(f'{"="*50}')
-        print(f'BTC 5m Live — {dt.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")} UTC')
+        print(f'BTC 5m Live — {dt.datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")} CST')
         print(f'{"="*50}\n')
         try:
             main()
