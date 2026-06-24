@@ -600,6 +600,7 @@ def main():
         'require_micro_momentum': bool(getattr(args, 'btc_require_momentum', False)),
         'atr_filter_multiplier': float(getattr(args, 'btc_atr_multiplier', 0) or 0),
         'min_confidence': float(getattr(args, 'btc_min_confidence', 0) or 0),
+        'enable_pulse_filter': True,
     }
     if getattr(args, 'enable_btc_signal', False):
         try:
@@ -732,7 +733,8 @@ def main():
                               f"tier={signal_result.delta_tier.label} "
                               f"mom={signal_result.micro_momentum_pass} "
                               f"atr={signal_result.atr_pass} "
-                              f"conf={signal_result.confidence:.0f}%", flush=True)
+                              f"pulse={signal_result.pulse_pass}"
+                              f" conf={signal_result.confidence:.0f}%", flush=True)
                     else:
                         print(f"  -> BTC REJECT: data unavailable, skip entry", flush=True)
                         report['attempts'].append({

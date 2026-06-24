@@ -52,6 +52,8 @@ class SignalResult:
     direction_aligned: bool
     micro_momentum_pass: bool
     atr_pass: bool
+    pulse_pass: bool
+    pulse_ratio: float
     confidence: float       # 0-100
     reason: str             # "" if passed, else failure reason
 
@@ -169,6 +171,23 @@ def check_micro_momentum(candles: list[Candle1m], side: str, n_candles: int = 2)
     return True
 
 
+def check_pulse(candles: list[Candle1m], n_lookback: int = 3, threshold: float = 0.5) -> tuple[bool, float]:
+    """
+    Detect impulse (pulse) moves where the last candle dominates.
+    Returns (is_pulse, concentration_ratio).
+    is_pulse=True means the move is too concentrated — likely to reverse.
+    """
+    if len(candles) < n_lookback:
+        return (False, 0.0)
+    window = candles[-n_lookback:]
+    total_move = sum(abs(c.open - c.close) for c in window)
+    if total_move <= 0:
+        return (False, 0.0)
+    last_move = abs(window[-1].open - window[-1].close)
+    ratio = last_move / total_move
+    return (ratio > threshold, ratio)
+
+
 def compute_atr(candles: list[Candle1m], period: int = 5) -> Optional[float]:
     if len(candles) < period + 1:
         return None
@@ -230,10 +249,10 @@ def evaluate_signal(
     if enable_delta:
         min_tier = next((t for t in DELTA_TIERS if t.label == min_tier_label), DELTA_TIERS[1])
         if delta_tier.score < min_tier.score:
-            return SignalResult(False, delta_pct, delta_tier, dir_aligned, False, True,
+            return SignalResult(False, delta_pct, delta_tier, dir_aligned, False, True, True, 0.0,
                                 0.0, f"delta_tier_{delta_tier.label}_below_{min_tier_label}")
         if not dir_aligned:
-            return SignalResult(False, delta_pct, delta_tier, dir_aligned, False, True,
+            return SignalResult(False, delta_pct, delta_tier, dir_aligned, False, True, True, 0.0,
                                 0.0, "direction_misaligned")
 
     # Gate 2: micro momentum
@@ -248,21 +267,32 @@ def evaluate_signal(
         if skip:
             atr_pass = False
 
+    # Gate 4: pulse detection (last candle dominates = likely reversal)
+    pulse_pass = True
+    pulse_ratio = 0.0
+    if config.get("enable_pulse_filter", True):
+        is_pulse, pulse_ratio = check_pulse(candles)
+        if is_pulse:
+            pulse_pass = False
+
     # Confidence score
     late_boost = (seconds_left < 60)
     confidence = compute_confidence(delta_tier, mom_pass, late_boost)
 
     if confidence < min_confidence:
-        return SignalResult(False, delta_pct, delta_tier, dir_aligned, mom_pass, atr_pass,
+        return SignalResult(False, delta_pct, delta_tier, dir_aligned, mom_pass, atr_pass, pulse_pass, pulse_ratio,
                             confidence, f"confidence_{confidence:.0f}_below_{min_confidence}")
     if not mom_pass:
-        return SignalResult(False, delta_pct, delta_tier, dir_aligned, mom_pass, atr_pass,
+        return SignalResult(False, delta_pct, delta_tier, dir_aligned, mom_pass, atr_pass, pulse_pass, pulse_ratio,
                             confidence, "micro_momentum_fail")
     if not atr_pass:
-        return SignalResult(False, delta_pct, delta_tier, dir_aligned, mom_pass, atr_pass,
+        return SignalResult(False, delta_pct, delta_tier, dir_aligned, mom_pass, atr_pass, pulse_pass, pulse_ratio,
                             confidence, "atr_high_volatility")
+    if not pulse_pass:
+        return SignalResult(False, delta_pct, delta_tier, dir_aligned, mom_pass, atr_pass, pulse_pass, pulse_ratio,
+                            confidence, f"pulse_detected_{pulse_ratio:.0%}")
 
-    return SignalResult(True, delta_pct, delta_tier, dir_aligned, mom_pass, atr_pass,
+    return SignalResult(True, delta_pct, delta_tier, dir_aligned, mom_pass, atr_pass, pulse_pass, pulse_ratio,
                         confidence, "")
 
 
