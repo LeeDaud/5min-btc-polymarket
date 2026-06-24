@@ -73,9 +73,9 @@ profiles:
     btc_signal_quality:
       enabled: true
       window_delta_min_tier: "WEAK"
-      require_micro_momentum: true
-      atr_filter_multiplier: 1.5
-      min_confidence: 30
+      require_micro_momentum: false
+      atr_filter_multiplier: 0
+      min_confidence: 0
     dynamic_sizing:
       enabled: false
       max_position_usd: 5.0
@@ -116,8 +116,8 @@ profiles:
       enabled: true
       window_delta_min_tier: "WEAK"
       require_micro_momentum: false
-      atr_filter_multiplier: 2.0
-      min_confidence: 25
+      atr_filter_multiplier: 0
+      min_confidence: 0
     dynamic_sizing:
       enabled: false
       max_position_usd: 5.0
