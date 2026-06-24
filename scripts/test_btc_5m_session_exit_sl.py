@@ -1235,4 +1235,13 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    while True:
+        try:
+            main()
+        except KeyboardInterrupt:
+            print('\n[STOP] Keyboard interrupt, exiting.')
+            break
+        except Exception as e:
+            print(f'\n[FATAL] {e}', flush=True)
+        print(f'[RESTART] Next cycle in 3s...\n', flush=True)
+        time.sleep(3)
