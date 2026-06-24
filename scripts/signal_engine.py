@@ -57,12 +57,16 @@ class SignalResult:
 
 
 # ============================================================
-# Binance data feed
+# Multi-source BTC data feed (Binance + MEXC fallback)
 # ============================================================
 
 class BtcDataFeed:
-    TICKER_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
-    KLINES_URL = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=12"
+    # Primary: Binance (may be geo-blocked in some regions)
+    BINANCE_TICKER = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+    BINANCE_KLINES = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=12"
+    # Fallback: MEXC (accessible from mainland China)
+    MEXC_TICKER = "https://api.mexc.com/api/v3/ticker/price?symbol=BTCUSDT"
+    MEXC_KLINES = "https://api.mexc.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=12"
 
     def __init__(self):
         self._klines_cache: list[Candle1m] = []
@@ -71,46 +75,65 @@ class BtcDataFeed:
         self._consecutive_errors: int = 0
         self._max_consecutive_errors: int = 5
         self._last_error: Optional[str] = None
+        self._using_fallback: bool = False
+
+    def _raw_ticker(self, url: str, timeout: float) -> Optional[float]:
+        r = requests.get(url, timeout=timeout)
+        r.raise_for_status()
+        return float(r.json()["price"])
+
+    def _raw_klines(self, url: str, timeout: float) -> list[Candle1m]:
+        r = requests.get(url, timeout=timeout)
+        r.raise_for_status()
+        rows = r.json()
+        candles = []
+        for row in rows:
+            candles.append(Candle1m(
+                open_time=int(row[0]),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5]),
+            ))
+        return candles
 
     def fetch_price(self) -> Optional[float]:
-        try:
-            r = requests.get(self.TICKER_URL, timeout=4)
-            r.raise_for_status()
-            self._consecutive_errors = 0
-            self._last_error = None
-            return float(r.json()["price"])
-        except Exception as e:
-            self._consecutive_errors += 1
-            self._last_error = str(e)
-            return None
+        for label, url in [("binance", self.BINANCE_TICKER), ("mexc", self.MEXC_TICKER)]:
+            try:
+                price = self._raw_ticker(url, timeout=4)
+                self._consecutive_errors = 0
+                self._last_error = None
+                if label == "mexc" and not self._using_fallback:
+                    self._using_fallback = True
+                return price
+            except Exception as e:
+                if label == "binance":
+                    continue  # try fallback immediately
+                self._consecutive_errors += 1
+                self._last_error = str(e)
+                return None
 
     def fetch_klines(self, force: bool = False) -> list[Candle1m]:
         now = time.time()
         if not force and self._klines_cache and (now - self._klines_ts) < self._cache_ttl:
             return self._klines_cache
-        try:
-            r = requests.get(self.KLINES_URL, timeout=6)
-            r.raise_for_status()
-            rows = r.json()
-            candles = []
-            for row in rows:
-                candles.append(Candle1m(
-                    open_time=int(row[0]),
-                    open=float(row[1]),
-                    high=float(row[2]),
-                    low=float(row[3]),
-                    close=float(row[4]),
-                    volume=float(row[5]),
-                ))
-            self._klines_cache = candles
-            self._klines_ts = now
-            self._consecutive_errors = 0
-            self._last_error = None
-            return candles
-        except Exception as e:
-            self._consecutive_errors += 1
-            self._last_error = str(e)
-            return self._klines_cache  # return stale cache rather than nothing
+        for label, url in [("binance", self.BINANCE_KLINES), ("mexc", self.MEXC_KLINES)]:
+            try:
+                candles = self._raw_klines(url, timeout=6)
+                self._klines_cache = candles
+                self._klines_ts = now
+                self._consecutive_errors = 0
+                self._last_error = None
+                if label == "mexc" and not self._using_fallback:
+                    self._using_fallback = True
+                return candles
+            except Exception as e:
+                if label == "binance":
+                    continue
+                self._consecutive_errors += 1
+                self._last_error = str(e)
+        return self._klines_cache  # return stale cache as last resort
 
     def get_window_open(self, bucket_ts: int) -> Optional[float]:
         candles = self.fetch_klines()
