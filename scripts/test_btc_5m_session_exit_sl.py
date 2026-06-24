@@ -957,7 +957,7 @@ def main():
 
             pnl_pct = (side_px - opened['entry_price']) / opened['entry_price'] * 100
             pnl_usd = opened['cost_usdc'] * pnl_pct / 100
-            print(f"  pos={side_px:.4f}  PnL={pnl_usd:+.2f}$ ({pnl_pct:+.1f}%)  stop={trail_stop:.4f}  T-{sec_left:.0f}s", flush=True)
+            print(f"  {opened['side']} | in={opened['entry_price']:.4f} now={side_px:.4f} | PnL={pnl_usd:+.2f}$ ({pnl_pct:+.1f}%) | T-{sec_left:.0f}s", flush=True)
 
         if now >= cooldown_until:
             if side_px is not None and side_px <= trail_stop:
