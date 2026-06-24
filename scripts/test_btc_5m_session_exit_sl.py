@@ -669,6 +669,14 @@ def main():
             if slug in traded_slugs:
                 continue
 
+            # Window switch detection
+            last_slug = getattr(args, '_last_seen_slug', None)
+            if last_slug and last_slug != slug:
+                print(f"\n{'—' * 40}")
+                print(f"[{ts_local()}] NEW WINDOW {slug}")
+                print(f"{'—' * 40}\n", flush=True)
+            args._last_seen_slug = slug
+
             print(f"[{ts_local()}] {slug} UP_ask={up_ask} DOWN_ask={dn_ask} sec_left={sec_left:.0f}", flush=True)
 
             candidates: list[tuple[str, float]] = []
