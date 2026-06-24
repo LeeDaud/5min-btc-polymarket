@@ -18,6 +18,9 @@ from py_clob_client_v2.client import ClobClient
 from py_clob_client_v2.constants import POLYGON
 from py_clob_client_v2.clob_types import ApiCreds
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from signal_engine import BtcDataFeed, evaluate_signal, compute_position_size, SignalResult
+
 UTC = dt.timezone.utc
 
 
@@ -352,6 +355,17 @@ PROFILES: dict[str, dict[str, Any]] = {
         'entry_timeout_min': 60,
         'poll_sec': 1.0,
         'net_fail_limit': 2,
+        # BTC signal quality
+        'enable_btc_signal': True,
+        'btc_delta_min_tier': 'WEAK',
+        'btc_require_momentum': True,
+        'btc_atr_multiplier': 1.5,
+        'btc_min_confidence': 30.0,
+        # Dynamic sizing
+        'enable_dynamic_sizing': False,
+        'max_position_usd': 5.0,
+        'sizing_base_frac': 0.05,
+        'sizing_conf_mult': 0.10,
     },
     'aggressive': {
         'threshold': 0.68,
@@ -368,12 +382,77 @@ PROFILES: dict[str, dict[str, Any]] = {
         'entry_timeout_min': 60,
         'poll_sec': 1.0,
         'net_fail_limit': 2,
+        # BTC signal quality (looser)
+        'enable_btc_signal': True,
+        'btc_delta_min_tier': 'WEAK',
+        'btc_require_momentum': False,
+        'btc_atr_multiplier': 2.0,
+        'btc_min_confidence': 25.0,
+        # Dynamic sizing
+        'enable_dynamic_sizing': False,
+        'max_position_usd': 5.0,
+        'sizing_base_frac': 0.05,
+        'sizing_conf_mult': 0.10,
     },
 }
 
 
+def load_profile_from_yaml(profile_name: str) -> Optional[dict[str, Any]]:
+    yaml_path = Path(__file__).resolve().parents[1] / 'config' / 'btc_5m_profiles.yaml'
+    if not yaml_path.exists():
+        return None
+    try:
+        import yaml
+        with open(yaml_path) as f:
+            data = yaml.safe_load(f)
+        raw = data.get('profiles', {}).get(profile_name)
+        if not raw:
+            return None
+        flat: dict[str, Any] = {}
+        sig = raw.get('signal', {})
+        flat['threshold'] = float(sig.get('threshold_price', 0.70))
+        flat['max_entry_price'] = float(sig.get('max_entry_price', 1.0))
+        siz = raw.get('sizing', {})
+        flat['stake_usd'] = float(siz.get('stake_usd', 1.0))
+        ts = raw.get('trail_stop', {})
+        flat['trail_stop_pct'] = float(ts.get('trail_stop_pct', 0.15))
+        tp = raw.get('take_profit', {})
+        flat['take_profit_pct'] = float(tp.get('take_profit_pct', 0.0))
+        flat['tp_partial_pct'] = float(tp.get('tp_partial_pct', 0.20))
+        flat['tp_partial_ratio'] = float(tp.get('tp_partial_ratio', 0.50))
+        hg = raw.get('hedge', {})
+        flat['hedge_ratio'] = float(hg.get('hedge_ratio', 0.0))
+        ee = raw.get('emergency_exit', {})
+        flat['emergency_exit_sec'] = int(ee.get('exit_sec', 10))
+        flat['exit_before_sec'] = int(data.get('shared_rules', {}).get('session_timing', {}).get('exit_before_sec', 40))
+        flat['min_entry_seconds_left'] = int(data.get('shared_rules', {}).get('session_timing', {}).get('min_entry_seconds_left', 60))
+        flat['entry_timeout_min'] = 60
+        flat['poll_sec'] = 1.0
+        flat['net_fail_limit'] = 2
+        # BTC signal quality
+        sq = raw.get('btc_signal_quality', {})
+        if sq:
+            flat['enable_btc_signal'] = bool(sq.get('enabled', False))
+            flat['btc_delta_min_tier'] = str(sq.get('window_delta_min_tier', 'WEAK'))
+            flat['btc_require_momentum'] = bool(sq.get('require_micro_momentum', False))
+            flat['btc_atr_multiplier'] = float(sq.get('atr_filter_multiplier', 0))
+            flat['btc_min_confidence'] = float(sq.get('min_confidence', 0))
+        ds = raw.get('dynamic_sizing', {})
+        if ds:
+            flat['enable_dynamic_sizing'] = bool(ds.get('enabled', False))
+            flat['max_position_usd'] = float(ds.get('max_position_usd', 5.0))
+            flat['sizing_base_frac'] = float(ds.get('base_fraction', 0.05))
+            flat['sizing_conf_mult'] = float(ds.get('confidence_multiplier', 0.10))
+        return flat
+    except Exception:
+        return None
+
+
 def apply_profile(args: argparse.Namespace) -> argparse.Namespace:
-    prof = PROFILES.get(args.profile or 'conservative', PROFILES['conservative'])
+    # Try YAML first, fall back to hardcoded PROFILES
+    prof = load_profile_from_yaml(args.profile or 'conservative')
+    if prof is None:
+        prof = PROFILES.get(args.profile or 'conservative', PROFILES['conservative'])
     if args.threshold is None:
         args.threshold = float(prof['threshold'])
     if args.max_entry_price is None:
@@ -400,6 +479,27 @@ def apply_profile(args: argparse.Namespace) -> argparse.Namespace:
         args.entry_timeout_min = int(prof['entry_timeout_min'])
     if args.poll_sec is None:
         args.poll_sec = float(prof['poll_sec'])
+    # BTC signal quality (CLI overrides when provided)
+    if getattr(args, 'enable_btc_signal', None) is not None:
+        args.enable_btc_signal = str(args.enable_btc_signal).lower() in ('true', '1', 'yes')
+    else:
+        args.enable_btc_signal = bool(prof.get('enable_btc_signal', False))
+    if getattr(args, 'btc_delta_min_tier', None) is None:
+        args.btc_delta_min_tier = str(prof.get('btc_delta_min_tier', 'WEAK'))
+    args.btc_require_momentum = bool(prof.get('btc_require_momentum', False))
+    if getattr(args, 'btc_atr_multiplier', None) is None:
+        args.btc_atr_multiplier = float(prof.get('btc_atr_multiplier', 0) or 0)
+    if getattr(args, 'btc_min_confidence', None) is None:
+        args.btc_min_confidence = float(prof.get('btc_min_confidence', 0) or 0)
+    # Dynamic sizing (CLI overrides when provided)
+    if getattr(args, 'enable_dynamic_sizing', None) is not None:
+        args.enable_dynamic_sizing = str(args.enable_dynamic_sizing).lower() in ('true', '1', 'yes')
+    else:
+        args.enable_dynamic_sizing = bool(prof.get('enable_dynamic_sizing', False))
+    if getattr(args, 'max_position_usd', None) is None:
+        args.max_position_usd = float(prof.get('max_position_usd', 5.0))
+    args.sizing_base_frac = float(prof.get('sizing_base_frac', 0.05))
+    args.sizing_conf_mult = float(prof.get('sizing_conf_mult', 0.10))
     return args
 
 
@@ -436,6 +536,12 @@ def main():
     ap.add_argument('--poll-sec', type=float, default=None)
     ap.add_argument('--close-retry-max', type=int, default=18, help='Max close retries when position is not yet visible / not immediately closable')
     ap.add_argument('--close-retry-delay-sec', type=float, default=2.0, help='Delay between close retries')
+    ap.add_argument('--enable-btc-signal', type=str, default=None, help='Enable BTC signal filters: true/false (default from profile)')
+    ap.add_argument('--btc-delta-min-tier', type=str, default=None, choices=['SKIP','WEAK','STRONG','MEGA'], help='Minimum window delta tier')
+    ap.add_argument('--btc-min-confidence', type=float, default=None, help='Minimum composite confidence 0-100')
+    ap.add_argument('--btc-atr-multiplier', type=float, default=None, help='ATR multiplier for volatility filter (0=disabled)')
+    ap.add_argument('--enable-dynamic-sizing', type=str, default=None, help='Enable dynamic position sizing: true/false')
+    ap.add_argument('--max-position-usd', type=float, default=None, help='Max position size for dynamic sizing (USD)')
     ap.add_argument('--execute', action='store_true')
     args = apply_profile(ap.parse_args())
 
@@ -455,6 +561,12 @@ def main():
             'close_retry_max': args.close_retry_max,
             'close_retry_delay_sec': args.close_retry_delay_sec,
             'execute': args.execute,
+            'enable_btc_signal': getattr(args, 'enable_btc_signal', False),
+            'btc_delta_min_tier': getattr(args, 'btc_delta_min_tier', 'WEAK'),
+            'btc_min_confidence': getattr(args, 'btc_min_confidence', 0),
+            'btc_atr_multiplier': getattr(args, 'btc_atr_multiplier', 0),
+            'enable_dynamic_sizing': getattr(args, 'enable_dynamic_sizing', False),
+            'max_position_usd': getattr(args, 'max_position_usd', 5.0),
         },
         'attempts': [],
     }
@@ -474,6 +586,27 @@ def main():
                         traded_slugs.add(t.get('slug', ''))
     except Exception:
         pass
+
+    # Initialize BTC data feed for signal quality checks
+    btc_feed = None
+    btc_signal_config = {
+        'enable_window_delta': True,
+        'window_delta_min_tier': str(getattr(args, 'btc_delta_min_tier', 'WEAK')),
+        'require_micro_momentum': bool(getattr(args, 'btc_require_momentum', False)),
+        'atr_filter_multiplier': float(getattr(args, 'btc_atr_multiplier', 0) or 0),
+        'min_confidence': float(getattr(args, 'btc_min_confidence', 0) or 0),
+    }
+    if getattr(args, 'enable_btc_signal', False):
+        try:
+            btc_feed = BtcDataFeed()
+            _ = btc_feed.fetch_klines()  # pre-warm cache
+            print(f"  [BTC] Signal filters enabled: delta>={btc_signal_config['window_delta_min_tier']} "
+                  f"momentum={btc_signal_config['require_micro_momentum']} "
+                  f"atr_mult={btc_signal_config['atr_filter_multiplier']} "
+                  f"min_conf={btc_signal_config['min_confidence']:.0f}%")
+        except Exception as e:
+            print(f"  [WARN] BTC data feed init failed: {e}. Continuing without BTC filters.")
+            btc_feed = None
 
     while time.time() < deadline:
         try:
@@ -557,9 +690,58 @@ def main():
                 continue
 
             side, trigger_price = sorted(candidates, key=lambda x: x[1], reverse=True)[0]
-            print(f"  -> ENTER {side} at ask={trigger_price:.4f}", flush=True)
+            print(f"  -> CLOB OK {side} ask={trigger_price:.4f}", flush=True)
 
-            out, objs = run_open(args.repo, slug, side, args.stake_usd, args.execute, trigger_price)
+            # ===== BTC signal quality check =====
+            signal_result = None
+            if btc_feed is not None and btc_feed.is_healthy():
+                btc_price = btc_feed.fetch_price()
+                candles = btc_feed.fetch_klines()
+                window_open = btc_feed.get_window_open(int(time.time()) - (int(time.time()) % 300))
+                if btc_price is not None and window_open is not None and candles:
+                    signal_result = evaluate_signal(
+                        current_price=btc_price,
+                        window_open=window_open,
+                        candles=candles,
+                        side=side,
+                        config=btc_signal_config,
+                        seconds_left=sec_left,
+                    )
+                    if not signal_result.passed:
+                        print(f"  -> BTC REJECT ({signal_result.reason}) "
+                              f"delta={signal_result.window_delta_pct:+.3f}% "
+                              f"tier={signal_result.delta_tier.label} "
+                              f"conf={signal_result.confidence:.0f}", flush=True)
+                        report['attempts'].append({
+                            'ts': ts_utc(), 'slug': slug, 'side': side,
+                            'status': 'skip_btc_signal',
+                            'reason': signal_result.reason,
+                            'window_delta_pct': round(signal_result.window_delta_pct, 4),
+                            'delta_tier': signal_result.delta_tier.label,
+                            'confidence': round(signal_result.confidence, 1),
+                        })
+                        time.sleep(args.poll_sec)
+                        continue
+                    print(f"  -> BTC OK delta={signal_result.window_delta_pct:+.3f}% "
+                          f"tier={signal_result.delta_tier.label} "
+                          f"mom={signal_result.micro_momentum_pass} "
+                          f"atr={signal_result.atr_pass} "
+                          f"conf={signal_result.confidence:.0f}%", flush=True)
+                else:
+                    print(f"  -> BTC data unavailable, bypassing signal filter", flush=True)
+
+            # ===== Dynamic position sizing =====
+            entry_stake = args.stake_usd
+            if getattr(args, 'enable_dynamic_sizing', False) and signal_result is not None:
+                entry_stake = compute_position_size(
+                    confidence=signal_result.confidence,
+                    max_position=float(getattr(args, 'max_position_usd', 5.0)),
+                    base_frac=float(getattr(args, 'sizing_base_frac', 0.05)),
+                    conf_mult=float(getattr(args, 'sizing_conf_mult', 0.10)),
+                )
+                print(f"  -> Dynamic sizing: ${entry_stake:.2f} (conf={signal_result.confidence:.0f}%)")
+
+            out, objs = run_open(args.repo, slug, side, entry_stake, args.execute, trigger_price)
             post = None
             runner = None
             for o in objs:

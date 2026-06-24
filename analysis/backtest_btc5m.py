@@ -69,7 +69,10 @@ def norm_cdf(x):
 
 def simulate_slot(slot_candles, threshold=0.70, stop_loss_pct=0.25,
                   entry_min_btc_move=70, exit_before_sec=20,
-                  btc_5min_std=None, clob_spread=0.03):
+                  btc_5min_std=None, clob_spread=0.03,
+                  enable_delta_filter=False, delta_min_tier_label='WEAK',
+                  enable_momentum_filter=False, atr_multiplier=0.0,
+                  min_confidence=0.0):
     """
     Simulate the strategy on one 5-minute slot.
 
@@ -136,6 +139,66 @@ def simulate_slot(slot_candles, threshold=0.70, stop_loss_pct=0.25,
         # Strategy only enters if ask price >= threshold
         if ask_price < threshold:
             continue
+
+        # ===== BTC signal quality gates (backtest mode, all default off) =====
+        if enable_delta_filter or enable_momentum_filter or atr_multiplier > 0 or min_confidence > 0:
+            delta_pct = (btc_now - btc_start) / btc_start * 100.0
+            abs_delta = abs(delta_pct)
+
+            tiers = [("SKIP", 0, 0.0), ("WEAK", 3, 0.05), ("STRONG", 5, 0.10), ("MEGA", 7, 1.0)]
+            delta_tier_score = 0
+            for lb, sc, mn in tiers:
+                if abs_delta >= mn:
+                    delta_tier_score = sc
+
+            mom_pass = True
+            if enable_delta_filter:
+                min_tier_map = {"SKIP": 0, "WEAK": 3, "STRONG": 5, "MEGA": 7}
+                min_score = min_tier_map.get(delta_min_tier_label, 3)
+                if delta_tier_score < min_score:
+                    continue
+                if direction == 'UP' and delta_pct <= 0:
+                    continue
+                if direction == 'DOWN' and delta_pct >= 0:
+                    continue
+
+            if enable_momentum_filter:
+                start_idx = max(0, i - 1)
+                for j in range(start_idx, i + 1):
+                    cj = slot_candles[j]
+                    if direction == 'UP' and cj['close'] <= cj.get('open', cj['close']):
+                        mom_pass = False
+                    if direction == 'DOWN' and cj['close'] >= cj.get('open', cj['close']):
+                        mom_pass = False
+                if not mom_pass:
+                    continue
+
+            if atr_multiplier > 0:
+                tr_values = []
+                for j in range(max(1, i - 4), i + 1):
+                    cj = slot_candles[j]
+                    cjp = slot_candles[j - 1]
+                    high = cj.get('high', cj['close'])
+                    low = cj.get('low', cj['close'])
+                    prev_close = cjp['close']
+                    tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                    tr_values.append(tr)
+                if tr_values:
+                    atr_val = statistics.mean(tr_values)
+                    cur_range = slot_candles[i].get('high', btc_now) - slot_candles[i].get('low', btc_now)
+                    if cur_range > atr_val * atr_multiplier:
+                        continue
+
+            if min_confidence > 0:
+                mom_bonus = 2 if enable_momentum_filter and mom_pass else 0
+                raw = delta_tier_score + mom_bonus
+                conf = (raw / 9.0) * 100.0
+                if seconds_left < 60:
+                    conf *= 1.25
+                conf = min(100.0, conf)
+                if conf < min_confidence:
+                    continue
+        # ===== End BTC signal gates =====
 
         entry_price = ask_price
 

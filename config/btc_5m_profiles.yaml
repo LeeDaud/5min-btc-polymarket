@@ -1,17 +1,11 @@
-version: 2
-name: btc_5m_impulse_momentum_profiles
+version: 3
+name: btc_5m_signal_quality_profiles
 market: polymarket_btc_updown_5m
 
-# Optimization notes (2026-06-22 backtest, 99 slots, BTC 5-min σ=$90):
-#   Baseline:            thresh=0.70 max_ask=1.0  sl=25% min_move=$40 → 74 trades, 67.6% win, cum +248.82%, sharpe 0.248
-#   Optimized #1 (best): thresh=0.75 max_ask=0.92 sl=15% min_move=$30 → 55 trades, 70.9% win, cum +346.92%, sharpe 0.484
-#   Optimized #2 (bal):  thresh=0.70 max_ask=0.92 sl=20% min_move=$40 → 50 trades, 74.0% win, cum +309.59%, sharpe 0.440
-#
-# Key improvements over original:
-#   1. max_entry_price cap (0.92): filters near-certainty entries (ask > 0.92) with no upside
-#   2. Tighter stop-loss (15-20% vs 25-30%): each loss is smaller, net -15%×12 < -25%×9
-#   3. Higher threshold (0.75 conservative): better entry quality
-#   4. Lower min_btc_move (30-40): enter earlier in momentum, better entry price
+# Optimization notes (2026-06-22 backtest, 99 slots, BTC 5-min sigma=$90):
+#   Baseline:            thresh=0.70 max_ask=1.0  sl=25% min_move=$40 -> 74 trades, 67.6% win, cum +248.82%, sharpe 0.248
+#   Optimized #1 (best): thresh=0.75 max_ask=0.92 sl=15% min_move=$30 -> 55 trades, 70.9% win, cum +346.92%, sharpe 0.484
+#   Optimized #2 (bal):  thresh=0.70 max_ask=0.92 sl=20% min_move=$40 -> 50 trades, 74.0% win, cum +309.59%, sharpe 0.440
 
 strategy_reference:
   style: momentum_follow_through_into_close
@@ -19,7 +13,7 @@ strategy_reference:
   entry_window_seconds_left_tolerance: 30
   btc_move_usd_min: 30
   btc_move_usd_max_reference: 100
-  max_entry_price_note: "Do NOT enter if CLOB ask > max_entry_price — insufficient upside remains."
+  max_entry_price_note: "Do NOT enter if CLOB ask > max_entry_price - insufficient upside remains."
   skew_bias_note: "Prefer direction supported by market skew when momentum is already established."
   sizing_note: "Typical discretionary sizing can be up to ~50% of allocated trading balance; tune risk per user preference."
   optional_hedge_note: "When skew is extreme (for example >=95/5), allow a small opposite hedge to reduce last-second reversal risk."
@@ -44,11 +38,11 @@ shared_rules:
   session_timing:
     monitor_continuous: true
     min_entry_seconds_left: 60
-    exit_before_sec: 20
+    exit_before_sec: 40
 
 profiles:
   conservative:
-    description: "Higher quality entries, tight stop, moderate momentum requirement. After optimization."
+    description: "Higher quality entries with BTC signal confirmation. Tight stop, moderate momentum."
     signal:
       trigger_source: "clob_best_ask"
       direction_rule: "follow_stronger_side_over_threshold"
@@ -57,28 +51,40 @@ profiles:
       min_btc_move_usd: 30
     sizing:
       stake_mode: "fixed_or_cap"
-      stake_usd: 4
+      stake_usd: 1.0
       risk_per_trade_pct_equity: 8
       max_notional_usd: 8
       daily_max_loss_pct: 10
       max_trades_per_day: 20
     hedge:
-      enabled: true
-      hedge_ratio: 0.10
-      note: "10% micro-hedge on opposite side"
+      enabled: false
+      hedge_ratio: 0.0
     trail_stop:
       enabled: true
-      trail_stop_pct: 0.13
+      trail_stop_pct: 0.07
     take_profit:
       enabled: true
-      take_profit_pct: 0.20
+      tp_partial_pct: 0.20
+      tp_partial_ratio: 0.50
+      take_profit_pct: 0.0
     emergency_exit:
       enabled: true
-      exit_sec: 10
-      note: "T-10s last-ditch FAK sell"
+      exit_sec: 15
+    btc_signal_quality:
+      enabled: true
+      window_delta_min_tier: "WEAK"
+      require_micro_momentum: true
+      atr_filter_multiplier: 1.5
+      min_confidence: 30
+    dynamic_sizing:
+      enabled: false
+      max_position_usd: 5.0
+      base_fraction: 0.05
+      confidence_multiplier: 0.10
+      late_window_boost: true
 
   aggressive:
-    description: "More entries, earlier momentum catch, moderate stop. After optimization."
+    description: "More entries, earlier momentum catch, looser BTC filters."
     signal:
       trigger_source: "clob_best_ask"
       direction_rule: "follow_stronger_side_over_threshold"
@@ -87,28 +93,40 @@ profiles:
       min_btc_move_usd: 30
     sizing:
       stake_mode: "fixed_or_cap"
-      stake_usd: 4
+      stake_usd: 1.0
       risk_per_trade_pct_equity: 15
       max_notional_usd: 15
       daily_max_loss_pct: 15
       max_trades_per_day: 20
     hedge:
-      enabled: true
-      hedge_ratio: 0.08
-      note: "8% micro-hedge on opposite side"
+      enabled: false
+      hedge_ratio: 0.0
     trail_stop:
       enabled: true
-      trail_stop_pct: 0.18
+      trail_stop_pct: 0.10
     take_profit:
       enabled: true
-      take_profit_pct: 0.20
+      tp_partial_pct: 0.25
+      tp_partial_ratio: 0.50
+      take_profit_pct: 0.0
     emergency_exit:
       enabled: true
-      exit_sec: 10
-      note: "T-10s last-ditch FAK sell"
+      exit_sec: 15
+    btc_signal_quality:
+      enabled: true
+      window_delta_min_tier: "WEAK"
+      require_micro_momentum: false
+      atr_filter_multiplier: 2.0
+      min_confidence: 25
+    dynamic_sizing:
+      enabled: false
+      max_position_usd: 5.0
+      base_fraction: 0.05
+      confidence_multiplier: 0.10
+      late_window_boost: true
 
 runner_mapping:
-  script: "skills/btc-5m-live/scripts/test_btc_5m_session_exit_sl.py"
+  script: "scripts/test_btc_5m_session_exit_sl.py"
   direct_flags_now_supported:
     - "--threshold"
     - "--max-entry-price"
@@ -119,11 +137,16 @@ runner_mapping:
     - "--entry-timeout-min"
     - "--poll-sec"
     - "--execute"
-  example_conservative_now: ".venv/bin/python scripts/test_btc_5m_session_exit_sl.py --threshold 0.75 --stake-usd 4 --stop-loss-pct 0.15 --exit-before-sec 20 --min-entry-seconds-left 60 --entry-timeout-min 60 --poll-sec 5 --execute"
-  example_aggressive_now: ".venv/bin/python scripts/test_btc_5m_session_exit_sl.py --threshold 0.70 --stake-usd 6 --stop-loss-pct 0.20 --exit-before-sec 20 --min-entry-seconds-left 60 --entry-timeout-min 60 --poll-sec 5 --execute"
+    - "--enable-btc-signal"
+    - "--btc-delta-min-tier"
+    - "--btc-min-confidence"
+    - "--btc-atr-multiplier"
+    - "--enable-dynamic-sizing"
+    - "--max-position-usd"
 
 notes:
-  - "v2: Optimized parameters from 99-slot backtest. max_entry_price is the new critical parameter."
-  - "Current 5m runner uses threshold/side-strength logic; impulse filter integration can be extended at strategy layer."
-  - "Entry behavior: continuous CLOB ask monitoring; if UP/DOWN ask >= threshold AND ask <= max_entry_price, enter on stronger side."
+  - "v3: Added BTC signal quality filters (window delta, micro-momentum, ATR, confidence scoring) and dynamic position sizing."
+  - "v2: Optimized parameters from 99-slot backtest. max_entry_price is the critical parameter."
+  - "Current 5m runner uses threshold/side-strength logic with optional BTC signal confirmation."
+  - "Entry behavior: CLOB ask >= threshold AND ask <= max_entry_price, then BTC delta/momentum/ATR gates confirm."
   - "Backtest script at 026-polymarket/optimize_params.py; re-run periodically as BTC volatility regime changes."

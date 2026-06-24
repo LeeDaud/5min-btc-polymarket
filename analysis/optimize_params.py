@@ -83,9 +83,13 @@ def norm_cdf(x):
 
 def simulate_slot(slot_candles, threshold=0.70, max_entry_price=1.0,
                   stop_loss_pct=0.25, min_btc_move=40,
-                  exit_before_sec=20, btc_5min_std=None, clob_spread=0.03):
+                  exit_before_sec=20, btc_5min_std=None, clob_spread=0.03,
+                  enable_delta_filter=False, delta_min_tier_label='WEAK',
+                  enable_momentum_filter=False, atr_multiplier=0.0,
+                  min_confidence=0.0):
     """
     Returns: (entered, result_dict) — entered=False if no trade.
+    New params enable BTC signal quality gates (all default off for backward compat).
     """
     slot_start = slot_candles[0]['open_time'] // 1000
     slot_end = slot_start + 300
@@ -126,6 +130,74 @@ def simulate_slot(slot_candles, threshold=0.70, max_entry_price=1.0,
             continue
         if ask_price > max_entry_price:
             continue
+
+        # ===== BTC signal quality gates (backtest mode) =====
+        if enable_delta_filter or enable_momentum_filter or atr_multiplier > 0 or min_confidence > 0:
+            # Compute window delta
+            delta_pct = (btc_now - btc_start) / btc_start * 100.0
+            abs_delta = abs(delta_pct)
+
+            # Tier classification
+            tiers = [("SKIP", 0, 0.0), ("WEAK", 3, 0.05), ("STRONG", 5, 0.10), ("MEGA", 7, 1.0)]
+            delta_tier_score = 0
+            delta_tier_label_actual = "SKIP"
+            for lb, sc, mn in tiers:
+                if abs_delta >= mn:
+                    delta_tier_score = sc
+                    delta_tier_label_actual = lb
+
+            if enable_delta_filter:
+                min_tier_map = {"SKIP": 0, "WEAK": 3, "STRONG": 5, "MEGA": 7}
+                min_score = min_tier_map.get(delta_min_tier_label, 3)
+                if delta_tier_score < min_score:
+                    continue  # delta too weak
+                # Direction alignment
+                if direction == 'UP' and delta_pct <= 0:
+                    continue
+                if direction == 'DOWN' and delta_pct >= 0:
+                    continue
+
+            if enable_momentum_filter:
+                # Check last 2 candles (i and i-1 if available) close in same direction
+                mom_pass = True
+                start_idx = max(0, i - 1)
+                for j in range(start_idx, i + 1):
+                    cj = slot_candles[j]
+                    if direction == 'UP' and cj['close'] <= cj.get('open', cj['close']):
+                        mom_pass = False
+                    if direction == 'DOWN' and cj['close'] >= cj.get('open', cj['close']):
+                        mom_pass = False
+                if not mom_pass:
+                    continue
+
+            if atr_multiplier > 0:
+                # Compute ATR from last 5 candles (or all available before this one)
+                tr_values = []
+                for j in range(max(1, i - 4), i + 1):
+                    cj = slot_candles[j]
+                    cjp = slot_candles[j - 1]
+                    high = cj.get('high', cj['close'])
+                    low = cj.get('low', cj['close'])
+                    prev_close = cjp['close']
+                    tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                    tr_values.append(tr)
+                if tr_values:
+                    atr_val = statistics.mean(tr_values)
+                    cur_range = slot_candles[i].get('high', btc_now) - slot_candles[i].get('low', btc_now)
+                    if cur_range > atr_val * atr_multiplier:
+                        continue  # volatility too high
+
+            if min_confidence > 0:
+                # Compute confidence from delta + momentum
+                mom_bonus = 2 if enable_momentum_filter and mom_pass else 0
+                raw = delta_tier_score + mom_bonus
+                conf = (raw / 9.0) * 100.0
+                if seconds_left < 60:
+                    conf *= 1.25
+                conf = min(100.0, conf)
+                if conf < min_confidence:
+                    continue
+        # ===== End BTC signal gates =====
 
         entry_price = ask_price
         sl_price = entry_price * (1.0 - stop_loss_pct)
@@ -385,6 +457,21 @@ def main():
         'stop_loss_pct':    [0.15, 0.20, 0.25, 0.30],
         'min_btc_move':     [30, 40, 50, 60],
     }
+
+    # Extended search: add BTC signal quality dimensions
+    full_search = "--full" in sys.argv
+    if full_search:
+        param_grid.update({
+            'enable_delta_filter': [True],
+            'delta_min_tier_label': ['WEAK', 'STRONG'],
+            'enable_momentum_filter': [True, False],
+            'atr_multiplier': [1.5, 2.0],
+            'min_confidence': [25, 30],
+        })
+        print("    [FULL SEARCH] Including BTC signal quality dimensions")
+    else:
+        # Default: all signal gates off (backward compatible)
+        print("    (use --full to include BTC signal quality dimensions)")
 
     print(f"[2] Running grid search on {len(completed_slots)} slots...")
     all_results = run_grid_search(completed_slots, btc_5min_std, param_grid)
