@@ -811,6 +811,10 @@ def main():
         except Exception as e:
             report['attempts'].append({'ts': ts_utc(), 'status': 'error', 'error': str(e)})
             print(f"  -> EXCEPTION: {e}", flush=True)
+        if opened:
+            # Entered in this slot — prevent re-entry and proceed to monitoring
+            traded_slugs.add(opened['market_slug'])
+            break
         time.sleep(args.poll_sec)
 
     if not opened:
