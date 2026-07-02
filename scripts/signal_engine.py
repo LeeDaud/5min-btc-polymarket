@@ -5,12 +5,50 @@ Active gates: window delta tier + pulse detection (delta-pulse mode).
 VLS-5M mode: VWAP + Squeeze Momentum + Liquidity Sweep.
 """
 import os
+import socket
+import struct
 import time
 import statistics
 from dataclasses import dataclass
 from typing import Optional
 
 import requests
+import urllib3.util.connection as _urllib3_conn
+
+
+# ============================================================
+# SOCKS5 proxy (stdlib-only, no PySocks required)
+# ============================================================
+
+_socks5_orig_create = _urllib3_conn.create_connection
+
+def _socks5_tcp_connect(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                         source_address=None, socket_options=None):
+    """TCP connect via SOCKS5 proxy, used as drop-in replacement for urllib3."""
+    proxy = os.environ.get('SOCKS5_PROXY', '')
+    if not proxy:
+        return _socks5_orig_create(address, timeout, source_address, socket_options)
+    host, _, port_str = proxy.replace('socks5://', '').partition(':')
+    port = int(port_str) if port_str else 1080
+    target_host, target_port = address
+
+    sock = _socks5_orig_create((host, port), timeout, source_address, socket_options)
+    try:
+        sock.sendall(b'\x05\x01\x00')
+        if sock.recv(2) != b'\x05\x00':
+            raise OSError('SOCKS5 auth rejected')
+        tb = target_host.encode('ascii')
+        sock.sendall(b'\x05\x01\x00\x03' + bytes([len(tb)]) + tb + struct.pack('>H', target_port))
+        resp = sock.recv(10)
+        if resp[1] != 0x00:
+            raise OSError(f'SOCKS5 connect failed: {resp[1]}')
+        return sock
+    except Exception:
+        sock.close()
+        raise
+
+# Patch urllib3 globally — all HTTP traffic goes through SOCKS5 when SOCKS5_PROXY is set
+_urllib3_conn.create_connection = _socks5_tcp_connect
 
 from indicators import (
     compute_anchored_vwap, compute_daily_vwap,
@@ -105,12 +143,7 @@ class BtcDataFeed:
 
     @staticmethod
     def _build_session() -> requests.Session:
-        s = requests.Session()
-        # Only use MEXC-specific proxy, don't leak to Polymarket API
-        proxy_url = os.environ.get('MEXC_PROXY', '')
-        if proxy_url:
-            s.proxies = {'http': proxy_url, 'https': proxy_url}
-        return s
+        return requests.Session()
 
     def fetch_price(self) -> Optional[float]:
         try:
