@@ -637,7 +637,7 @@ def main():
     if need_btc_feed:
         try:
             btc_feed = BtcDataFeed()
-            _ = btc_feed.fetch_klines()
+            _ = btc_feed.fetch_klines_daily()
             print(f"  [BTC] Feed ready, {len(_)} candles cached", flush=True)
         except Exception as e:
             print(f"  [WARN] BTC data feed init failed: {e}.", flush=True)
@@ -794,10 +794,14 @@ def main():
                 trigger_price = up_ask if pm_side == "UP" else dn_ask
 
                 if trigger_price is None or trigger_price > float(args.max_entry_price or 1.0):
-                    print(f"  -> VLS REJECT: {pm_side} ask={trigger_price} exceeds max_entry={args.max_entry_price}", flush=True)
+                    other_ask = dn_ask if pm_side == "UP" else up_ask
+                    print(f"  -> VLS REJECT: {pm_side} ask={trigger_price} not viable"
+                          f" (other_side_ask={other_ask})"
+                          f" | dir={vls_result.direction} vwap={vls_result.vwap:.0f}"
+                          f" sweep={vls_result.sweep_type} sq={vls_result.squeeze_color} conf={vls_result.confidence:.0f}%", flush=True)
                     report['attempts'].append({
                         'ts': ts_utc(), 'slug': slug, 'status': 'skip_vls_ask',
-                        'reason': 'ask_exceeds_max_entry',
+                        'reason': 'ask_not_viable',
                         'vls_direction': vls_result.direction,
                     })
                     time.sleep(args.poll_sec)
