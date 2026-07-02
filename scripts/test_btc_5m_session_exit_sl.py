@@ -465,6 +465,7 @@ def load_profile_from_yaml(profile_name: str) -> Optional[dict[str, Any]]:
             flat['vls_tp1_rr_ratio'] = float(vls.get('tp1_rr_ratio', 1.5))
             flat['vls_tp2_rr_ratio'] = float(vls.get('tp2_rr_ratio', 3.0))
             flat['vls_btc_to_token_ratio'] = float(vls.get('btc_to_token_move_ratio', 0.0002))
+            flat['vls_max_stop_loss_pct'] = float(vls.get('max_stop_loss_pct', 8.0))
         return flat
     except Exception:
         return None
@@ -533,7 +534,8 @@ def apply_profile(args: argparse.Namespace) -> argparse.Namespace:
         args.vls_stop_buffer_pct = float(prof.get('vls_stop_buffer_pct', 0.2))
         args.vls_tp1_rr_ratio = float(prof.get('vls_tp1_rr_ratio', 1.5))
         args.vls_tp2_rr_ratio = float(prof.get('vls_tp2_rr_ratio', 3.0))
-        args.vls_btc_to_token_ratio = float(prof.get('vls_btc_to_token_ratio', 0.0002))
+        args.vls_btc_to_token_ratio = float(prof.get('vls_btc_to_token_ratio', 0.002))
+        args.vls_max_stop_loss_pct = float(prof.get('vls_max_stop_loss_pct', 8.0))
     return args
 
 
@@ -751,7 +753,9 @@ def main():
                     'stop_buffer_pct': float(getattr(args, 'vls_stop_buffer_pct', 0.2)),
                     'tp1_rr_ratio': float(getattr(args, 'vls_tp1_rr_ratio', 1.5)),
                     'tp2_rr_ratio': float(getattr(args, 'vls_tp2_rr_ratio', 3.0)),
-                    'btc_to_token_move_ratio': float(getattr(args, 'vls_btc_to_token_ratio', 0.0002)),
+                    'btc_to_token_move_ratio': float(getattr(args, 'vls_btc_to_token_ratio', 0.002)),
+                    'max_entry_price': float(args.max_entry_price or 0.85),
+                    'max_stop_loss_pct': float(getattr(args, 'vls_max_stop_loss_pct', 8.0)),
                 }
 
                 # Use CLOB ask as the entry token price reference
