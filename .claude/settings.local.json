@@ -13,7 +13,13 @@
       "Bash(D:/AAA-Project/026-polymarket/5min-btc-polymarket/.venv/Scripts/python *)",
       "Bash(ping *)",
       "Bash(ssh *)",
-      "Bash(D:/AAA-Project/026-polymarket/.venv/Scripts/pip install *)"
+      "Bash(D:/AAA-Project/026-polymarket/.venv/Scripts/pip install *)",
+      "Bash(git commit *)",
+      "Bash(/c/Python313/python *)",
+      "Bash(python *)",
+      "Bash(.venv/Scripts/python *)",
+      "Bash(git checkout *)",
+      "Bash(git *)"
     ]
   }
 }
