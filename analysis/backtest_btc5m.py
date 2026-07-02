@@ -88,7 +88,7 @@ def simulate_slot_vls(all_candles, slot_candles, btc_5min_std=None,
             'tp1_rr_ratio': 1.5, 'tp2_rr_ratio': 3.0,
             'btc_to_token_move_ratio': 0.002,
             'max_entry_price': 0.85,
-            'max_stop_loss_pct': 15.0,
+            'max_stop_loss_pct': 8.0,
         }
     if btc_5min_std is None:
         btc_5min_std = 70.0
