@@ -448,6 +448,17 @@ def load_profile_from_yaml(profile_name: str) -> Optional[dict[str, Any]]:
             flat['max_position_usd'] = float(ds.get('max_position_usd', 5.0))
             flat['sizing_base_frac'] = float(ds.get('base_fraction', 0.05))
             flat['sizing_conf_mult'] = float(ds.get('confidence_multiplier', 0.10))
+        # Strategy mode & VLS settings
+        flat['strategy_mode'] = str(raw.get('strategy_mode', 'delta-pulse'))
+        vls = raw.get('vls_settings', {})
+        if vls:
+            flat['vls_squeeze_period'] = int(vls.get('squeeze_period', 20))
+            flat['vls_sweep_lookback_min'] = int(vls.get('sweep_lookback_min', 15))
+            flat['vls_sweep_lookback_max'] = int(vls.get('sweep_lookback_max', 30))
+            flat['vls_stop_buffer_pct'] = float(vls.get('stop_buffer_pct', 0.2))
+            flat['vls_tp1_rr_ratio'] = float(vls.get('tp1_rr_ratio', 1.5))
+            flat['vls_tp2_rr_ratio'] = float(vls.get('tp2_rr_ratio', 3.0))
+            flat['vls_btc_to_token_ratio'] = float(vls.get('btc_to_token_move_ratio', 0.0002))
         return flat
     except Exception:
         return None
@@ -505,6 +516,18 @@ def apply_profile(args: argparse.Namespace) -> argparse.Namespace:
         args.max_position_usd = float(prof.get('max_position_usd', 5.0))
     args.sizing_base_frac = float(prof.get('sizing_base_frac', 0.05))
     args.sizing_conf_mult = float(prof.get('sizing_conf_mult', 0.10))
+    # Strategy mode
+    if getattr(args, 'strategy', None) is None:
+        args.strategy = str(prof.get('strategy_mode', 'delta-pulse'))
+    # VLS settings
+    if args.strategy == 'vls-5m':
+        args.vls_squeeze_period = int(prof.get('vls_squeeze_period', 20))
+        args.vls_sweep_lookback_min = int(prof.get('vls_sweep_lookback_min', 15))
+        args.vls_sweep_lookback_max = int(prof.get('vls_sweep_lookback_max', 30))
+        args.vls_stop_buffer_pct = float(prof.get('vls_stop_buffer_pct', 0.2))
+        args.vls_tp1_rr_ratio = float(prof.get('vls_tp1_rr_ratio', 1.5))
+        args.vls_tp2_rr_ratio = float(prof.get('vls_tp2_rr_ratio', 3.0))
+        args.vls_btc_to_token_ratio = float(prof.get('vls_btc_to_token_ratio', 0.0002))
     return args
 
 
@@ -547,6 +570,7 @@ def main():
     ap.add_argument('--btc-atr-multiplier', type=float, default=None, help='ATR multiplier for volatility filter (0=disabled)')
     ap.add_argument('--enable-dynamic-sizing', type=str, default=None, help='Enable dynamic position sizing: true/false')
     ap.add_argument('--max-position-usd', type=float, default=None, help='Max position size for dynamic sizing (USD)')
+    ap.add_argument('--strategy', type=str, default=None, choices=['delta-pulse', 'vls-5m'], help='Signal strategy: delta-pulse (default) or vls-5m')
     ap.add_argument('--execute', action='store_true')
     args = apply_profile(ap.parse_args())
 
@@ -679,82 +703,193 @@ def main():
 
             print(f"[{ts_local()}] {slug} UP_ask={up_ask} DOWN_ask={dn_ask} sec_left={sec_left:.0f}", flush=True)
 
-            candidates: list[tuple[str, float]] = []
-            max_entry = float(args.max_entry_price or 1.0)
-            if up_ask is not None and float(up_ask) >= args.threshold and float(up_ask) <= max_entry:
-                candidates.append(('UP', float(up_ask)))
-            if dn_ask is not None and float(dn_ask) >= args.threshold and float(dn_ask) <= max_entry:
-                candidates.append(('DOWN', float(dn_ask)))
-
-            if not candidates:
-                report['attempts'].append({
-                    'ts': ts_utc(),
-                    'slug': slug,
-                    'status': 'skip_price_below_threshold',
-                    'threshold': args.threshold,
-                    'clob_up_ask': up_ask,
-                    'clob_down_ask': dn_ask,
-                    'seconds_left': sec_left,
-                })
-                print(f"  -> SKIP (need ask in [{args.threshold:.2f}, {max_entry:.2f}])", flush=True)
-                time.sleep(args.poll_sec)
-                continue
-
-            side, trigger_price = sorted(candidates, key=lambda x: x[1], reverse=True)[0]
-            print(f"  -> CLOB OK {side} ask={trigger_price:.4f}", flush=True)
-
-            # ===== BTC signal quality check =====
-            signal_result = None
-            if btc_feed is not None:
-                if btc_feed.is_healthy():
-                    btc_price = btc_feed.fetch_price()
-                    candles = btc_feed.fetch_klines()
-                    window_open = btc_feed.get_window_open(int(time.time()) - (int(time.time()) % 300))
-                    if btc_price is not None and window_open is not None and candles:
-                        signal_result = evaluate_signal(
-                            current_price=btc_price,
-                            window_open=window_open,
-                            candles=candles,
-                            side=side,
-                            config=btc_signal_config,
-                            seconds_left=sec_left,
-                        )
-                        if not signal_result.passed:
-                            print(f"  -> BTC REJECT ({signal_result.reason}) "
-                                  f"delta={signal_result.window_delta_pct:+.3f}% "
-                                  f"tier={signal_result.delta_tier.label}", flush=True)
-                            report['attempts'].append({
-                                'ts': ts_utc(), 'slug': slug, 'side': side,
-                                'status': 'skip_btc_signal',
-                                'reason': signal_result.reason,
-                                'window_delta_pct': round(signal_result.window_delta_pct, 4),
-                                'delta_tier': signal_result.delta_tier.label,
-                                'confidence': round(signal_result.confidence, 1),
-                            })
-                            time.sleep(args.poll_sec)
-                            continue
-                        print(f"  -> BTC OK delta={signal_result.window_delta_pct:+.3f}% "
-                              f"tier={signal_result.delta_tier.label} "
-                              f"pulse={signal_result.pulse_pass}", flush=True)
-                    else:
-                        print(f"  -> BTC REJECT: data unavailable, skip entry", flush=True)
-                        report['attempts'].append({
-                            'ts': ts_utc(), 'slug': slug, 'side': side,
-                            'status': 'skip_btc_signal',
-                            'reason': 'btc_data_unavailable',
-                        })
-                        time.sleep(args.poll_sec)
-                        continue
-                else:
-                    err = btc_feed._last_error or 'unknown'
-                    print(f"  -> BTC REJECT: feed unhealthy ({err}), skip entry", flush=True)
+            # ===== Strategy dispatch =====
+            if getattr(args, 'strategy', 'delta-pulse') == 'vls-5m':
+                # ---- VLS-5M signal path ----
+                if btc_feed is None or not btc_feed.is_healthy():
+                    print(f"  -> VLS REJECT: BTC feed unhealthy", flush=True)
                     report['attempts'].append({
-                        'ts': ts_utc(), 'slug': slug, 'side': side,
-                        'status': 'skip_btc_signal',
-                        'reason': f'btc_feed_unhealthy',
+                        'ts': ts_utc(), 'slug': slug, 'status': 'skip_vls_btc_feed',
+                        'reason': 'btc_feed_unhealthy',
                     })
                     time.sleep(args.poll_sec)
                     continue
+
+                btc_price = btc_feed.fetch_price()
+                if btc_price is None:
+                    print(f"  -> VLS REJECT: BTC price unavailable", flush=True)
+                    time.sleep(args.poll_sec)
+                    continue
+
+                daily_candles = btc_feed.fetch_klines_daily()
+                if not daily_candles or len(daily_candles) < 30:
+                    print(f"  -> VLS REJECT: insufficient candle data ({len(daily_candles) if daily_candles else 0})", flush=True)
+                    time.sleep(args.poll_sec)
+                    continue
+
+                candle_dicts = [{
+                    'open_time': c.open_time, 'open': c.open, 'high': c.high,
+                    'low': c.low, 'close': c.close, 'volume': c.volume,
+                } for c in daily_candles]
+
+                vls_config = {
+                    'sweep_lookback_min': int(getattr(args, 'vls_sweep_lookback_min', 15)),
+                    'sweep_lookback_max': int(getattr(args, 'vls_sweep_lookback_max', 30)),
+                    'squeeze_period': int(getattr(args, 'vls_squeeze_period', 20)),
+                    'stop_buffer_pct': float(getattr(args, 'vls_stop_buffer_pct', 0.2)),
+                    'tp1_rr_ratio': float(getattr(args, 'vls_tp1_rr_ratio', 1.5)),
+                    'tp2_rr_ratio': float(getattr(args, 'vls_tp2_rr_ratio', 3.0)),
+                    'btc_to_token_move_ratio': float(getattr(args, 'vls_btc_to_token_ratio', 0.0002)),
+                }
+
+                # Use CLOB ask as the entry token price reference
+                # Determine target side from VLS signal
+                target_side_hint = ""
+                if up_ask is not None and dn_ask is not None:
+                    if up_ask > dn_ask:
+                        target_side_hint = "UP"
+                    elif dn_ask > up_ask:
+                        target_side_hint = "DOWN"
+
+                entry_token_ref = up_ask if target_side_hint == "UP" else (dn_ask if target_side_hint == "DOWN" else 0.55)
+
+                vls_result = evaluate_vls_signal(
+                    candles=candle_dicts,
+                    current_price=btc_price,
+                    config=vls_config,
+                    side_preference=target_side_hint,
+                    entry_token_price=entry_token_ref,
+                )
+
+                if not vls_result.passed:
+                    print(f"  -> VLS REJECT ({vls_result.reason}) "
+                          f"vwap={vls_result.vwap:.0f} above_vwap={vls_result.price_above_vwap} "
+                          f"sweep={vls_result.sweep_type} squeeze={vls_result.squeeze_color}", flush=True)
+                    report['attempts'].append({
+                        'ts': ts_utc(), 'slug': slug, 'status': 'skip_vls_signal',
+                        'reason': vls_result.reason,
+                        'vls_direction': vls_result.direction,
+                        'vwap': round(vls_result.vwap, 2) if vls_result.vwap else None,
+                        'sweep_type': vls_result.sweep_type,
+                        'squeeze_color': vls_result.squeeze_color,
+                        'confidence': vls_result.confidence,
+                    })
+                    time.sleep(args.poll_sec)
+                    continue
+
+                # VLS signal passed — determine Polymarket side
+                pm_side = "UP" if vls_result.direction == "LONG" else "DOWN"
+                trigger_price = up_ask if pm_side == "UP" else dn_ask
+
+                if trigger_price is None or trigger_price > float(args.max_entry_price or 1.0):
+                    print(f"  -> VLS REJECT: {pm_side} ask={trigger_price} exceeds max_entry={args.max_entry_price}", flush=True)
+                    report['attempts'].append({
+                        'ts': ts_utc(), 'slug': slug, 'status': 'skip_vls_ask',
+                        'reason': 'ask_exceeds_max_entry',
+                        'vls_direction': vls_result.direction,
+                    })
+                    time.sleep(args.poll_sec)
+                    continue
+
+                side = pm_side
+                signal_result = None  # No delta-pulse signal for VLS
+                entry_stake = args.stake_usd
+
+                print(f"  -> VLS {vls_result.direction} sig={pm_side} ask={trigger_price:.4f} "
+                      f"conf={vls_result.confidence:.0f}% "
+                      f"vwap={vls_result.vwap:.0f} sweep={vls_result.sweep_type} "
+                      f"squeeze={vls_result.squeeze_color}", flush=True)
+
+                report['vls_signal'] = {
+                    'direction': vls_result.direction,
+                    'vwap': round(vls_result.vwap, 2) if vls_result.vwap else None,
+                    'sweep_type': vls_result.sweep_type,
+                    'sweep_level': round(vls_result.sweep_level, 2) if vls_result.sweep_level else None,
+                    'squeeze_color': vls_result.squeeze_color,
+                    'stop_loss_token': vls_result.stop_loss_token_price,
+                    'tp1_token': vls_result.tp1_token_price,
+                    'tp2_token': vls_result.tp2_token_price,
+                    'confidence': vls_result.confidence,
+                }
+
+            else:
+                # ---- Delta-Pulse signal path (existing) ----
+                candidates: list[tuple[str, float]] = []
+                max_entry = float(args.max_entry_price or 1.0)
+                if up_ask is not None and float(up_ask) >= args.threshold and float(up_ask) <= max_entry:
+                    candidates.append(('UP', float(up_ask)))
+                if dn_ask is not None and float(dn_ask) >= args.threshold and float(dn_ask) <= max_entry:
+                    candidates.append(('DOWN', float(dn_ask)))
+
+                if not candidates:
+                    report['attempts'].append({
+                        'ts': ts_utc(),
+                        'slug': slug,
+                        'status': 'skip_price_below_threshold',
+                        'threshold': args.threshold,
+                        'clob_up_ask': up_ask,
+                        'clob_down_ask': dn_ask,
+                        'seconds_left': sec_left,
+                    })
+                    print(f"  -> SKIP (need ask in [{args.threshold:.2f}, {max_entry:.2f}])", flush=True)
+                    time.sleep(args.poll_sec)
+                    continue
+
+                side, trigger_price = sorted(candidates, key=lambda x: x[1], reverse=True)[0]
+                print(f"  -> CLOB OK {side} ask={trigger_price:.4f}", flush=True)
+
+                # ===== BTC signal quality check (delta-pulse) =====
+                signal_result = None
+                if btc_feed is not None:
+                    if btc_feed.is_healthy():
+                        btc_price = btc_feed.fetch_price()
+                        candles = btc_feed.fetch_klines()
+                        window_open = btc_feed.get_window_open(int(time.time()) - (int(time.time()) % 300))
+                        if btc_price is not None and window_open is not None and candles:
+                            signal_result = evaluate_signal(
+                                current_price=btc_price,
+                                window_open=window_open,
+                                candles=candles,
+                                side=side,
+                                config=btc_signal_config,
+                                seconds_left=sec_left,
+                            )
+                            if not signal_result.passed:
+                                print(f"  -> BTC REJECT ({signal_result.reason}) "
+                                      f"delta={signal_result.window_delta_pct:+.3f}% "
+                                      f"tier={signal_result.delta_tier.label}", flush=True)
+                                report['attempts'].append({
+                                    'ts': ts_utc(), 'slug': slug, 'side': side,
+                                    'status': 'skip_btc_signal',
+                                    'reason': signal_result.reason,
+                                    'window_delta_pct': round(signal_result.window_delta_pct, 4),
+                                    'delta_tier': signal_result.delta_tier.label,
+                                    'confidence': round(signal_result.confidence, 1),
+                                })
+                                time.sleep(args.poll_sec)
+                                continue
+                            print(f"  -> BTC OK delta={signal_result.window_delta_pct:+.3f}% "
+                                  f"tier={signal_result.delta_tier.label} "
+                                  f"pulse={signal_result.pulse_pass}", flush=True)
+                        else:
+                            print(f"  -> BTC REJECT: data unavailable, skip entry", flush=True)
+                            report['attempts'].append({
+                                'ts': ts_utc(), 'slug': slug, 'side': side,
+                                'status': 'skip_btc_signal',
+                                'reason': 'btc_data_unavailable',
+                            })
+                            time.sleep(args.poll_sec)
+                            continue
+                    else:
+                        err = btc_feed._last_error or 'unknown'
+                        print(f"  -> BTC REJECT: feed unhealthy ({err}), skip entry", flush=True)
+                        report['attempts'].append({
+                            'ts': ts_utc(), 'slug': slug, 'side': side,
+                            'status': 'skip_btc_signal',
+                            'reason': f'btc_feed_unhealthy',
+                        })
+                        time.sleep(args.poll_sec)
+                        continue
 
             # ===== Dynamic position sizing =====
             entry_stake = args.stake_usd
@@ -907,6 +1042,24 @@ def main():
     report['initial_trail_stop'] = trail_stop
     print(f"  Trail Stop: {trail_pct*100:.0f}% below peak  Initial: {trail_stop:.4f}  Cooldown: 5s  FailLimit: {getattr(args, 'net_fail_limit', 2)}  ExitBefore: {args.exit_before_sec}s")
 
+    # ---- VLS-5M: override with R/R-based stop/TP from signal ----
+    vls_stop_price = None
+    vls_tp1_price = None
+    vls_tp2_price = None
+    vls_tp1_done = False
+    if getattr(args, 'strategy', 'delta-pulse') == 'vls-5m':
+        vls_sig = report.get('vls_signal', {})
+        if vls_sig:
+            vls_stop_price = vls_sig.get('stop_loss_token')
+            vls_tp1_price = vls_sig.get('tp1_token')
+            vls_tp2_price = vls_sig.get('tp2_token')
+            if vls_stop_price is not None:
+                trail_stop = vls_stop_price
+                report['vls_stop_price'] = vls_stop_price
+                report['vls_tp1_price'] = vls_tp1_price
+                report['vls_tp2_price'] = vls_tp2_price
+                print(f"  VLS Stop: {vls_stop_price:.4f}  TP1: {vls_tp1_price:.4f} (1.5:1)  TP2: {vls_tp2_price:.4f} (3:1)", flush=True)
+
     close_reason = None
     partial_tp_done = False
     net_fails = 0
@@ -937,31 +1090,37 @@ def main():
         report['last_side_price'] = side_px
         report['last_check_at'] = ts_utc()
 
+        is_vls = getattr(args, 'strategy', 'delta-pulse') == 'vls-5m' and vls_stop_price is not None
+
         if side_px is not None:
-            if side_px > highest_price:
-                highest_price = side_px
-                new_trail = highest_price * (1.0 - trail_pct)
-                # Update on-chain GTC when trail stop moves up
-                if new_trail > gtc_safety_price + 0.01 and client and args.execute:
-                    try:
-                        if gtc_safety_id:
-                            client.cancel(gtc_safety_id)
-                        new_price = round(new_trail - 0.02, 2)
-                        from py_clob_client_v2.clob_types import OrderArgs as OA
-                        from py_clob_client_v2 import Side as S2
-                        sx = client.create_order(OA(
-                            token_id=opened['token_id'], price=new_price,
-                            size=opened['shares'], side=S2.SELL,
-                        ))
-                        gtc_result = client.post_order(sx)
-                        if isinstance(gtc_result, dict) and gtc_result.get('orderID'):
-                            gtc_safety_id = str(gtc_result['orderID'])
-                            gtc_safety_price = new_price
-                            print(f"  [SAFETY] GTC updated to {new_price:.4f}  order={gtc_safety_id[:20]}...")
-                    except Exception:
-                        pass
-                trail_stop = new_trail
-                print(f"  [TRAIL] lock at {trail_stop:.4f} (+{(trail_stop - opened['entry_price'])/opened['entry_price']*100:.1f}%)", flush=True)
+            if not is_vls:
+                # === Delta-pulse: trailing stop ===
+                if side_px > highest_price:
+                    highest_price = side_px
+                    new_trail = highest_price * (1.0 - trail_pct)
+                    if new_trail > gtc_safety_price + 0.01 and client and args.execute:
+                        try:
+                            if gtc_safety_id:
+                                client.cancel(gtc_safety_id)
+                            new_price = round(new_trail - 0.02, 2)
+                            from py_clob_client_v2.clob_types import OrderArgs as OA
+                            from py_clob_client_v2 import Side as S2
+                            sx = client.create_order(OA(
+                                token_id=opened['token_id'], price=new_price,
+                                size=opened['shares'], side=S2.SELL,
+                            ))
+                            gtc_result = client.post_order(sx)
+                            if isinstance(gtc_result, dict) and gtc_result.get('orderID'):
+                                gtc_safety_id = str(gtc_result['orderID'])
+                                gtc_safety_price = new_price
+                                print(f"  [SAFETY] GTC updated to {new_price:.4f}  order={gtc_safety_id[:20]}...")
+                        except Exception:
+                            pass
+                    trail_stop = new_trail
+                    print(f"  [TRAIL] lock at {trail_stop:.4f} (+{(trail_stop - opened['entry_price'])/opened['entry_price']*100:.1f}%)", flush=True)
+            else:
+                # === VLS-5M: fixed stop, no trailing ===
+                pass
 
             pnl_pct = (side_px - opened['entry_price']) / opened['entry_price'] * 100
             pnl_usd = opened['cost_usdc'] * pnl_pct / 100
@@ -969,42 +1128,86 @@ def main():
 
         if now >= cooldown_until:
             if side_px is not None and side_px <= trail_stop:
-                close_reason = f"trail_stop_{int(trail_pct * 100)}pct"
+                if is_vls:
+                    close_reason = f"vls_stop_loss"
+                else:
+                    close_reason = f"trail_stop_{int(trail_pct * 100)}pct"
                 break
+
+            # VLS-5M TP1 (1.5:1 R/R): close 50%, move stop to breakeven
+            if is_vls and not vls_tp1_done and vls_tp1_price is not None:
+                tp_reached = (opened['side'] == 'UP' and side_px is not None and side_px >= vls_tp1_price) or \
+                             (opened['side'] == 'DOWN' and side_px is not None and side_px <= vls_tp1_price)
+                if tp_reached:
+                    close_shares = opened['shares'] * 0.5
+                    print(f"  [VLS TP1] 1.5:1 reached, closing 50% ({close_shares:.4f} shares)", flush=True)
+                    try:
+                        out_p, objs_p = run_close(args.repo, opened['market_slug'], opened['token_id'], close_shares, args.execute, close_order_type='FAK')
+                        last_p = objs_p[-1] if objs_p else {}
+                        post_p = last_p.get('order_post_result') or {}
+                        if post_p.get('success') and str(post_p.get('status', '')).lower() == 'matched':
+                            close_rev = float(post_p.get('takingAmount') or 0)
+                            opened['shares'] -= close_shares
+                            if opened['shares'] < 0:
+                                opened['shares'] = 0
+                            vls_tp1_done = True
+                            report['vls_tp1'] = {'shares_closed': close_shares, 'revenue': close_rev}
+                            # Move stop to breakeven
+                            trail_stop = opened['entry_price']
+                            print(f"  [VLS TP1] done, remaining {opened['shares']:.4f} shares, stop→breakeven {trail_stop:.4f}", flush=True)
+                            if gtc_safety_id and client:
+                                try:
+                                    client.cancel(gtc_safety_id)
+                                except Exception:
+                                    pass
+                                gtc_safety_id = None
+                        else:
+                            print(f"  [VLS TP1] order failed, status={post_p.get('status', '?')}", flush=True)
+                    except Exception as e:
+                        print(f"  [VLS TP1] failed: {e}", flush=True)
+
+            # VLS-5M TP2 (3:1 R/R): close remaining
+            if is_vls and vls_tp2_price is not None:
+                tp2_reached = (opened['side'] == 'UP' and side_px is not None and side_px >= vls_tp2_price) or \
+                              (opened['side'] == 'DOWN' and side_px is not None and side_px <= vls_tp2_price)
+                if tp2_reached:
+                    close_reason = "vls_tp2_3r"
+                    break
 
             if tp_price and side_px is not None and side_px >= tp_price:
                 close_reason = f"take_profit_{int(args.take_profit_pct * 100)}pct"
                 break
 
-            # Partial take-profit: lock profit on part of position
-            tp_partial_pct = getattr(args, 'tp_partial_pct', 0) or 0
-            tp_partial_ratio = getattr(args, 'tp_partial_ratio', 0.5) or 0.5
-            if tp_partial_pct > 0 and not partial_tp_done and side_px is not None:
-                if pnl_pct >= tp_partial_pct * 100:
-                    close_shares = opened['shares'] * tp_partial_ratio
-                    print(f"  [PARTIAL TP] +{pnl_pct:.1f}% reached, closing {tp_partial_ratio*100:.0f}% ({close_shares:.4f} shares)", flush=True)
-                    try:
-                        out_p, objs_p = run_close(args.repo, opened['market_slug'], opened['token_id'], close_shares, args.execute, close_order_type='FAK')
-                        last_p = objs_p[-1] if objs_p else {}
-                        post_p = last_p.get('order_post_result') or {}
-                        if post_p.get('success') and str(post_p.get('status','')).lower() == 'matched':
-                            close_rev = float(post_p.get('takingAmount') or 0)
-                            opened['shares'] -= close_shares
-                            opened['cost_usdc'] -= close_rev * (opened['cost_usdc'] / (opened['shares'] + close_shares))
-                            if opened['shares'] < 0:
-                                opened['shares'] = 0
-                            partial_tp_done = True
-                            report['partial_tp'] = {'shares_closed': close_shares, 'revenue': close_rev}
-                            print(f"  [PARTIAL TP] done, remaining {opened['shares']:.4f} shares", flush=True)
-                            # Also cancel/update GTC safety for remaining shares
-                            if gtc_safety_id and client:
-                                try: client.cancel(gtc_safety_id)
-                                except: pass
-                                gtc_safety_id = None
-                        else:
-                            print(f"  [PARTIAL TP] order failed, status={post_p.get('status','?')}")
-                    except Exception as e:
-                        print(f"  [PARTIAL TP] failed: {e}")
+            # Partial take-profit: lock profit on part of position (delta-pulse only; VLS uses own TP1/TP2)
+            if not is_vls:
+                tp_partial_pct = getattr(args, 'tp_partial_pct', 0) or 0
+                tp_partial_ratio = getattr(args, 'tp_partial_ratio', 0.5) or 0.5
+                if tp_partial_pct > 0 and not partial_tp_done and side_px is not None:
+                    if pnl_pct >= tp_partial_pct * 100:
+                        close_shares = opened['shares'] * tp_partial_ratio
+                        print(f"  [PARTIAL TP] +{pnl_pct:.1f}% reached, closing {tp_partial_ratio*100:.0f}% ({close_shares:.4f} shares)", flush=True)
+                        try:
+                            out_p, objs_p = run_close(args.repo, opened['market_slug'], opened['token_id'], close_shares, args.execute, close_order_type='FAK')
+                            last_p = objs_p[-1] if objs_p else {}
+                            post_p = last_p.get('order_post_result') or {}
+                            if post_p.get('success') and str(post_p.get('status','')).lower() == 'matched':
+                                close_rev = float(post_p.get('takingAmount') or 0)
+                                opened['shares'] -= close_shares
+                                opened['cost_usdc'] -= close_rev * (opened['cost_usdc'] / (opened['shares'] + close_shares))
+                                if opened['shares'] < 0:
+                                    opened['shares'] = 0
+                                partial_tp_done = True
+                                report['partial_tp'] = {'shares_closed': close_shares, 'revenue': close_rev}
+                                print(f"  [PARTIAL TP] done, remaining {opened['shares']:.4f} shares", flush=True)
+                                # Also cancel/update GTC safety for remaining shares
+                                if gtc_safety_id and client:
+                                    try: client.cancel(gtc_safety_id)
+                                    except: pass
+                                    gtc_safety_id = None
+                            else:
+                                print(f"  [PARTIAL TP] order failed, status={post_p.get('status','?')}")
+                        except Exception as e:
+                            print(f"  [PARTIAL TP] failed: {e}")
         time.sleep(args.poll_sec)
     except Exception as e:
         print(f'  [CRASH] Recovery: {e}', flush=True)

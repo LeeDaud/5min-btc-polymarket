@@ -15,7 +15,10 @@ from pathlib import Path
 
 # Allow running from repo root or analysis/ directly
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 from state_manager import load_state, save_state, get_new_buckets, update_state, compute_cumulative_stats, reset_state
+from signal_engine import evaluate_vls_signal, VlsSignalResult
+from indicators import compute_squeeze_momentum, detect_liquidity_sweep, compute_anchored_vwap, compute_atr
 
 UTC = timezone.utc
 
@@ -65,6 +68,187 @@ def compute_5min_slots(candles):
 def norm_cdf(x):
     """Standard normal CDF approximation."""
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def simulate_slot_vls(all_candles, slot_candles, btc_5min_std=None,
+                       config=None, clob_spread=0.03,
+                       exit_before_sec=20):
+    """
+    VLS-5M backtest simulation on one 5-min slot.
+
+    Uses ALL available candle history up to this slot for indicator calculation,
+    then simulates entry/exit using R/R-based stop and take-profit levels.
+
+    Returns: (entered, result_dict) or (False, None)
+    """
+    if config is None:
+        config = {
+            'sweep_lookback_min': 15, 'sweep_lookback_max': 30,
+            'squeeze_period': 20, 'stop_buffer_pct': 0.2,
+            'tp1_rr_ratio': 1.5, 'tp2_rr_ratio': 3.0,
+            'btc_to_token_move_ratio': 0.0002,
+        }
+    if btc_5min_std is None:
+        btc_5min_std = 70.0
+
+    slot_start = slot_candles[0]['open_time'] // 1000
+    slot_end = slot_start + 300
+    btc_start = slot_candles[0]['open']
+
+    # Build candle history up to slot start
+    history = [c for c in all_candles if c['open_time'] // 1000 < slot_start]
+    if len(history) < 30:
+        return (False, None)
+
+    # Walk through slot candles to find entry point
+    for i, c in enumerate(slot_candles):
+        ts = c['open_time'] // 1000
+        seconds_left = slot_end - ts
+        seconds_elapsed = ts - slot_start
+
+        if seconds_left < 60 or seconds_left > 180:
+            continue
+
+        btc_now = c['close']
+        btc_move = btc_now - btc_start
+
+        if abs(btc_move) < 40:
+            continue
+
+        # Update history with candles seen so far in this slot
+        current_history = history + slot_candles[:i + 1]
+
+        # Run VLS signal evaluation
+        vls_result = evaluate_vls_signal(
+            candles=current_history,
+            current_price=btc_now,
+            config=config,
+            entry_token_price=0.55,
+        )
+
+        if not vls_result.passed:
+            continue
+
+        # Determine how model entry price
+        direction = vls_result.direction  # LONG or SHORT
+        pm_direction = 'UP' if direction == 'LONG' else 'DOWN'
+
+        # Model entry price from BTC move (using existing CDF model for fairness)
+        remaining_sec = slot_end - ts
+        remaining_vol = btc_5min_std * math.sqrt(remaining_sec / 300.0)
+        abs_move = abs(btc_move)
+        if remaining_vol > 0:
+            fair_prob = norm_cdf(abs_move / remaining_vol)
+        else:
+            fair_prob = 0.5
+        fair_prob = max(0.50, min(0.999, fair_prob))
+        entry_price = min(0.999, fair_prob + clob_spread / 2.0)
+
+        # Get VLS stop/TP levels (convert from token price space)
+        stop_token = vls_result.stop_loss_token_price or (entry_price * 0.85)
+        tp1_token = vls_result.tp1_token_price or (entry_price * 1.08)
+        tp2_token = vls_result.tp2_token_price or (entry_price * 1.15)
+
+        # Walk forward through remaining candles
+        exit_price = None
+        exit_reason = None
+        tp1_done = False
+        shares_remaining = 1.0
+        tp1_exit_price = None
+        breakeven_active = False
+
+        for j in range(i + 1, len(slot_candles)):
+            follow_c = slot_candles[j]
+            follow_btc = follow_c['close']
+            follow_remaining = max(10, slot_end - follow_c['open_time'] // 1000)
+
+            btc_move_from_start = follow_btc - btc_start
+            eff_move = btc_move_from_start if direction == 'LONG' else -btc_move_from_start
+
+            follow_vol = btc_5min_std * math.sqrt(follow_remaining / 300.0)
+            if follow_vol > 0:
+                current_mid = norm_cdf(eff_move / follow_vol)
+            else:
+                current_mid = 0.5
+            current_mid = max(0.001, min(0.999, current_mid))
+            current_bid = max(0.001, current_mid - clob_spread / 2.0)
+
+            # VLS stop loss check
+            effective_stop = stop_token
+            if breakeven_active:
+                effective_stop = entry_price
+            if current_bid <= effective_stop:
+                exit_price = effective_stop
+                exit_reason = 'vls_stop_loss'
+                break
+
+            # VLS TP1 (1.5:1 R/R) — lock 50%, move stop to breakeven
+            if not tp1_done:
+                tp1_hit = (direction == 'LONG' and current_bid >= tp1_token) or \
+                          (direction == 'SHORT' and current_bid <= tp1_token)
+                if tp1_hit:
+                    tp1_exit_price = current_bid
+                    tp1_done = True
+                    breakeven_active = True
+                    shares_remaining = 0.5
+
+            # VLS TP2 (3:1 R/R) — close remaining
+            if tp1_done or True:
+                tp2_hit = (direction == 'LONG' and current_bid >= tp2_token) or \
+                          (direction == 'SHORT' and current_bid <= tp2_token)
+                if tp2_hit:
+                    exit_price = current_bid
+                    exit_reason = 'vls_tp2'
+                    break
+
+            # Time exit
+            follow_ts = follow_c['open_time'] // 1000
+            if slot_end - follow_ts <= exit_before_sec:
+                exit_price = current_bid
+                exit_reason = 'vls_time_exit'
+                break
+
+            if j == len(slot_candles) - 1:
+                exit_price = current_bid
+                exit_reason = 'vls_end_of_data'
+
+        if exit_price is None:
+            final_btc = slot_candles[-1]['close']
+            btc_final_move = final_btc - btc_start
+            won = (direction == 'LONG' and btc_final_move > 0) or \
+                  (direction == 'SHORT' and btc_final_move < 0)
+            exit_price = 1.0 if won else 0.0
+            exit_reason = 'settlement'
+
+        # Calculate composite PnL
+        total_pnl = 0.0
+        if tp1_done and tp1_exit_price is not None:
+            total_pnl += (tp1_exit_price - entry_price) * 0.5
+        if shares_remaining > 0:
+            total_pnl += (exit_price - entry_price) * shares_remaining
+        total_pnl_pct = (total_pnl / entry_price) * 100.0
+
+        result = {
+            'slot_start': slot_start,
+            'direction': pm_direction,
+            'vls_direction': direction,
+            'btc_start': btc_start,
+            'btc_entry': btc_now,
+            'entry_price_model': round(entry_price, 4),
+            'entry_ts': ts,
+            'seconds_left_at_entry': seconds_left,
+            'exit_price': round(exit_price, 4),
+            'exit_reason': exit_reason,
+            'won': total_pnl > 0,
+            'pnl_pct': round(total_pnl_pct, 2),
+            'tp1_hit': tp1_done,
+            'vls_sweep': vls_result.sweep_type,
+            'vls_squeeze_color': vls_result.squeeze_color,
+            'vls_confidence': vls_result.confidence,
+        }
+        return (True, result)
+
+    return (False, None)
 
 
 def simulate_slot(slot_candles, threshold=0.70, stop_loss_pct=0.25,
@@ -310,6 +494,7 @@ def simulate_slot(slot_candles, threshold=0.70, stop_loss_pct=0.25,
 def main():
     # Parse args
     reset = "--reset" in sys.argv
+    strategy = "vls-5m" if "--strategy" in sys.argv and "vls-5m" in sys.argv else "delta-pulse"
 
     if reset:
         reset_state()
@@ -319,8 +504,9 @@ def main():
     state = load_state()
     last_bucket = state.get("last_bucket", 0)
 
+    strategy_label = "VLS-5M (VWAP+Squeeze+Sweep)" if strategy == "vls-5m" else "Delta+Pulse"
     print("=" * 70)
-    print("BTC 5-Minute Polymarket Momentum Strategy - Backtest")
+    print(f"BTC 5-Minute Polymarket Backtest — {strategy_label}")
     if last_bucket > 0:
         last_time = datetime.fromtimestamp(last_bucket, UTC).strftime('%Y-%m-%d %H:%M')
         print(f"Incremental mode — resuming from {last_time}")
@@ -375,7 +561,10 @@ def main():
         btc_open = sc[0]['open']
         btc_close = sc[-1]['close']
 
-        signal, result = simulate_slot(sc, btc_5min_std=btc_5min_std)
+        if strategy == "vls-5m":
+            signal, result = simulate_slot_vls(candles, sc, btc_5min_std=btc_5min_std)
+        else:
+            signal, result = simulate_slot(sc, btc_5min_std=btc_5min_std)
         latest_bucket = max(latest_bucket, bucket)
 
         if result:
@@ -451,13 +640,22 @@ def main():
                     print(f"    [{lo:+4d}% ~ {hi:+4d}%): {count:3d} trades  {bar}")
 
     print(f"\n{'='*70}")
-    print("Model assumptions:")
-    print("  - Entry price: norm.cdf(BTC_move / remaining_vol) + spread/2")
-    print("  - Exit price:  norm.cdf(BTC_move / remaining_vol) - spread/2")
-    print("  - Stop loss: -25% from entry price")
+    if strategy == "vls-5m":
+        print("VLS-5M Model assumptions:")
+        print("  - Entry: VWAP trend + Liquidity Sweep + Squeeze Momentum (3-gate)")
+        print("  - Stop: sweep level ±0.2% buffer")
+        print("  - TP1: 1.5:1 R/R (50% close, stop→breakeven)")
+        print("  - TP2: 3:1 R/R (remaining close)")
+        print("  - Entry/exit prices modeled via norm.cdf(BTC_move / remaining_vol)")
+    else:
+        print("Model assumptions:")
+        print("  - Entry price: norm.cdf(BTC_move / remaining_vol) + spread/2")
+        print("  - Exit price:  norm.cdf(BTC_move / remaining_vol) - spread/2")
+        print("  - Stop loss: -25% from entry price")
     print("  - Data: MEXC 1-min BTC klines, no CLOB order book history")
     print(f"{'='*70}")
     print(f"\nTip: run with --reset to clear history and start fresh.")
+    print(f"     add --strategy vls-5m for VWAP+Squeeze+Sweep backtest.")
 
 
 if __name__ == '__main__':

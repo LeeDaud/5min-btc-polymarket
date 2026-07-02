@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 BTC signal quality engine for 5-min Polymarket momentum strategy.
-Active gates: window delta tier + pulse detection.
+Active gates: window delta tier + pulse detection (delta-pulse mode).
+VLS-5M mode: VWAP + Squeeze Momentum + Liquidity Sweep.
 """
 import time
 import statistics
@@ -9,6 +10,13 @@ from dataclasses import dataclass
 from typing import Optional
 
 import requests
+
+from scripts.indicators import (
+    compute_anchored_vwap, compute_daily_vwap,
+    compute_bollinger_bands, compute_keltner_channels,
+    compute_squeeze_momentum, detect_liquidity_sweep,
+    compute_atr as _indicator_atr, SqueezeState, SweepResult,
+)
 
 
 # ============================================================
@@ -54,6 +62,28 @@ class SignalResult:
     reason: str             # "" if passed, else failure reason
 
 
+@dataclass
+class VlsSignalResult:
+    passed: bool
+    direction: str              # "LONG" / "SHORT" / "NONE"
+    vwap: Optional[float]
+    price_above_vwap: bool
+    vwap_aligned: bool          # price>VWAP for LONG, price<VWAP for SHORT
+    sweep_detected: bool
+    sweep_type: str             # "bullish" / "bearish" / ""
+    sweep_level: Optional[float]
+    squeeze_firing: bool        # squeeze just released (was squeezing, now not)
+    squeeze_color: str          # bright_green / bright_red / dark_green / dark_red / etc
+    squeeze_momentum: float
+    entry_btc_price: Optional[float]
+    stop_loss_btc: Optional[float]
+    stop_loss_token_price: Optional[float]
+    tp1_token_price: Optional[float]     # 1.5:1 R/R
+    tp2_token_price: Optional[float]     # 3:1 R/R
+    confidence: float           # 0-100
+    reason: str                 # "" if passed, failure reason otherwise
+
+
 # ============================================================
 # BTC data feed (MEXC)
 # ============================================================
@@ -88,6 +118,38 @@ class BtcDataFeed:
             return self._klines_cache
         try:
             r = requests.get(self.KLINES_URL, timeout=6)
+            r.raise_for_status()
+            rows = r.json()
+            candles = []
+            for row in rows:
+                candles.append(Candle1m(
+                    open_time=int(row[0]),
+                    open=float(row[1]),
+                    high=float(row[2]),
+                    low=float(row[3]),
+                    close=float(row[4]),
+                    volume=float(row[5]),
+                ))
+            self._klines_cache = candles
+            self._klines_ts = now
+            self._consecutive_errors = 0
+            self._last_error = None
+            return candles
+        except Exception as e:
+            self._consecutive_errors += 1
+            self._last_error = str(e)
+            return self._klines_cache
+
+    def fetch_klines_daily(self, force: bool = False) -> list[Candle1m]:
+        """Fetch up to 500 1-min klines for VWAP and squeeze calculation (needs ~8h data)."""
+        now = time.time()
+        if not force and self._klines_cache and (now - self._klines_ts) < self._cache_ttl:
+            return self._klines_cache
+        try:
+            r = requests.get(
+                "https://api.mexc.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=500",
+                timeout=10,
+            )
             r.raise_for_status()
             rows = r.json()
             candles = []
@@ -286,6 +348,211 @@ def evaluate_signal(
 
     return SignalResult(True, delta_pct, delta_tier, dir_aligned, mom_pass, atr_pass, pulse_pass, pulse_ratio,
                         confidence, "")
+
+
+# ============================================================
+# VLS-5M signal evaluation (VWAP + Liquidity Sweep + Squeeze)
+# ============================================================
+
+def evaluate_vls_signal(
+    candles: list,
+    current_price: float,
+    config: dict,
+    side_preference: str = "",
+    entry_token_price: Optional[float] = None,
+) -> VlsSignalResult:
+    """
+    VLS-5M three-gate signal: VWAP trend → Liquidity Sweep → Squeeze Momentum.
+
+    Uses candle dicts (open/high/low/close/volume/open_time) from MEXC klines.
+    Returns VlsSignalResult with direction, stop/tp levels, and confidence.
+    """
+    if len(candles) < 30:
+        return VlsSignalResult(False, "NONE", None, False, False, False, "", None,
+                               False, "", 0.0, None, None, None, None, None, 0.0,
+                               "insufficient_data")
+
+    n = len(candles)
+    recent = candles[-1]
+    prev = candles[-2] if n >= 2 else recent
+
+    # ---- VWAP (daily anchor) ----
+    vwap = compute_daily_vwap(candles)
+    if vwap is None:
+        return VlsSignalResult(False, "NONE", None, False, False, False, "", None,
+                               False, "", 0.0, None, None, None, None, None, 0.0,
+                               "vwap_unavailable")
+    price_above_vwap = current_price > vwap
+
+    # ---- Liquidity Sweep ----
+    sweep_lookback_min = int(config.get("sweep_lookback_min", 15))
+    sweep_lookback_max = int(config.get("sweep_lookback_max", 30))
+    sweep = detect_liquidity_sweep(candles, sweep_lookback_min, sweep_lookback_max)
+
+    # ---- Squeeze Momentum ----
+    squeeze_period = int(config.get("squeeze_period", 20))
+    squeeze = compute_squeeze_momentum(candles, squeeze_period)
+    if squeeze is None:
+        return VlsSignalResult(False, "NONE", vwap, price_above_vwap, False, False, "", None,
+                               False, "", 0.0, None, None, None, None, None, 0.0,
+                               "squeeze_unavailable")
+
+    # ---- Gate 1: VWAP alignment ----
+    # LONG requires price > VWAP, SHORT requires price < VWAP
+    long_vwap_ok = price_above_vwap
+    short_vwap_ok = not price_above_vwap
+
+    # ---- Gate 2: Squeeze must be firing (released from squeeze) ----
+    squeeze_firing = squeeze.just_fired
+    if not squeeze_firing:
+        return VlsSignalResult(False, "NONE", vwap, price_above_vwap, False,
+                               sweep.bullish_sweep or sweep.bearish_sweep,
+                               "bullish" if sweep.bullish_sweep else ("bearish" if sweep.bearish_sweep else ""),
+                               sweep.sweep_level if sweep.sweep_level else None,
+                               False, squeeze.color, squeeze.momentum_val,
+                               current_price, None, None, None, None,
+                               0.0, "squeeze_not_fired")
+
+    # ---- Gate 3: Sweep must match direction ----
+    # Bullish sweep (fake breakdown) → LONG, Bearish sweep (fake breakout) → SHORT
+    long_sweep_ok = sweep.bullish_sweep
+    short_sweep_ok = sweep.bearish_sweep
+
+    # ---- Gate 4: Momentum color (after squeeze release) ----
+    # bright_green = positive + rising (LONG), bright_red = negative + falling (SHORT)
+    long_color_ok = squeeze.color == "bright_green"
+    short_color_ok = squeeze.color == "bright_red"
+
+    # ---- Determine direction ----
+    # If side_preference is given, only check that direction
+    if side_preference == "UP":
+        short_vwap_ok = False; short_sweep_ok = False; short_color_ok = False
+    elif side_preference == "DOWN":
+        long_vwap_ok = False; long_sweep_ok = False; long_color_ok = False
+
+    long_all = long_vwap_ok and long_sweep_ok and long_color_ok
+    short_all = short_vwap_ok and short_sweep_ok and short_color_ok
+
+    if not long_all and not short_all:
+        # Build specific rejection reason
+        reasons = []
+        direction = "NONE"
+        # Determine intended direction based on sweep
+        if sweep.bullish_sweep:
+            direction = "LONG"
+            if not long_vwap_ok:
+                reasons.append("vwap_not_above")
+            if not long_color_ok:
+                reasons.append(f"wrong_color_{squeeze.color}")
+        elif sweep.bearish_sweep:
+            direction = "SHORT"
+            if not short_vwap_ok:
+                reasons.append("vwap_not_below")
+            if not short_color_ok:
+                reasons.append(f"wrong_color_{squeeze.color}")
+        elif price_above_vwap:
+            direction = "LONG"
+            reasons.append("no_sweep")
+        else:
+            direction = "SHORT"
+            reasons.append("no_sweep")
+
+        return VlsSignalResult(False, direction, vwap, price_above_vwap, False,
+                               sweep.bullish_sweep or sweep.bearish_sweep,
+                               "bullish" if sweep.bullish_sweep else ("bearish" if sweep.bearish_sweep else ""),
+                               sweep.sweep_level if sweep.sweep_level else None,
+                               squeeze_firing, squeeze.color, squeeze.momentum_val,
+                               current_price, None, None, None, None,
+                               0.0, "|".join(reasons) if reasons else "signal_not_met")
+
+    # ---- Determine entry direction ----
+    if long_all:
+        direction = "LONG"
+        signal_side = "UP"
+        sweep_level = sweep.sweep_level
+    else:
+        direction = "SHORT"
+        signal_side = "DOWN"
+        sweep_level = sweep.sweep_level
+
+    # ---- Calculate stop loss and take profit ----
+    stop_buffer_pct = float(config.get("stop_buffer_pct", 0.2)) / 100.0
+    tp1_rr = float(config.get("tp1_rr_ratio", 1.5))
+    tp2_rr = float(config.get("tp2_rr_ratio", 3.0))
+
+    if direction == "LONG":
+        # Stop loss at sweep low minus buffer%
+        stop_btc = sweep_level * (1.0 - stop_buffer_pct)
+        # Distance from entry to stop (in BTC $)
+        stop_distance = current_price - stop_btc
+    else:
+        stop_btc = sweep_level * (1.0 + stop_buffer_pct)
+        stop_distance = stop_btc - current_price
+
+    if stop_distance <= 0:
+        stop_distance = 50.0  # fallback: $50 BTC move
+
+    # Convert BTC distance to token price distance
+    btc_to_token_ratio = float(config.get("btc_to_token_move_ratio", 0.0002))
+    token_stop_distance = stop_distance * btc_to_token_ratio
+
+    if entry_token_price is None or entry_token_price <= 0:
+        entry_token_price = 0.55  # reasonable default
+
+    if direction == "LONG":
+        stop_token = entry_token_price - token_stop_distance
+        tp1_token = entry_token_price + token_stop_distance * tp1_rr
+        tp2_token = entry_token_price + token_stop_distance * tp2_rr
+    else:
+        stop_token = entry_token_price + token_stop_distance
+        tp1_token = entry_token_price - token_stop_distance * tp1_rr
+        tp2_token = entry_token_price - token_stop_distance * tp2_rr
+
+    stop_token = max(0.02, min(0.98, stop_token))
+    tp1_token = max(0.02, min(0.98, tp1_token))
+    tp2_token = max(0.02, min(0.98, tp2_token))
+
+    # ---- Confidence score ----
+    # VWAP distance (how far price is from VWAP, normalized)
+    vwap_distance_pct = abs(current_price - vwap) / vwap * 100.0
+    vwap_score = min(3.0, vwap_distance_pct / 0.1)  # 0.1% away = 1 point, cap at 3
+
+    # Sweep quality (larger wick relative to body = clearer sweep)
+    sweep_score = 3.0 if (sweep.bullish_sweep or sweep.bearish_sweep) else 0.0
+
+    # Squeeze momentum strength
+    mom_abs = abs(squeeze.momentum_val)
+    mom_score = min(3.0, mom_abs / 1.0)  # normalize, cap at 3
+
+    confidence = (vwap_score + sweep_score + mom_score) / 9.0 * 100.0
+    confidence = min(100.0, max(0.0, confidence))
+
+    # Late window boost
+    late_boost = config.get("late_window_boost", False)
+    if late_boost:
+        confidence *= 1.25
+        confidence = min(100.0, confidence)
+
+    return VlsSignalResult(
+        passed=True,
+        direction=direction,
+        vwap=vwap,
+        price_above_vwap=price_above_vwap,
+        vwap_aligned=(direction == "LONG" and price_above_vwap) or (direction == "SHORT" and not price_above_vwap),
+        sweep_detected=True,
+        sweep_type="bullish" if sweep.bullish_sweep else "bearish",
+        sweep_level=sweep_level,
+        squeeze_firing=True,
+        squeeze_color=squeeze.color,
+        squeeze_momentum=squeeze.momentum_val,
+        entry_btc_price=current_price,
+        stop_loss_btc=stop_btc,
+        stop_loss_token_price=round(stop_token, 4),
+        tp1_token_price=round(tp1_token, 4),
+        tp2_token_price=round(tp2_token, 4),
+        confidence=round(confidence, 1),
+        reason="",
+    )
 
 
 # ============================================================

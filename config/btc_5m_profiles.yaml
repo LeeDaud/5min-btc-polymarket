@@ -125,6 +125,51 @@ profiles:
       confidence_multiplier: 0.10
       late_window_boost: true
 
+  vls_5m:
+    description: "VLS-5M momentum-resonance strategy using VWAP + Squeeze Momentum + Liquidity Sweep"
+    strategy_mode: "vls-5m"
+    signal:
+      trigger_source: "vls_signal"
+      direction_rule: "vls_resonance"
+      threshold_price: 0.50
+      max_entry_price: 0.85
+      min_btc_move_usd: 0
+    sizing:
+      stake_mode: "risk_based"
+      stake_usd: 1.0
+      risk_per_trade_pct_equity: 2.0
+      max_notional_usd: 8
+      daily_max_loss_pct: 10
+      max_trades_per_day: 20
+    hedge:
+      enabled: false
+      hedge_ratio: 0.0
+    vls_settings:
+      squeeze_period: 20
+      squeeze_bb_std: 2.0
+      squeeze_kc_atr_mult: 1.5
+      sweep_lookback_min: 15
+      sweep_lookback_max: 30
+      stop_buffer_pct: 0.2
+      tp1_rr_ratio: 1.5
+      tp2_rr_ratio: 3.0
+      btc_to_token_move_ratio: 0.0002
+    emergency_exit:
+      enabled: true
+      exit_sec: 15
+    btc_signal_quality:
+      enabled: false
+    dynamic_sizing:
+      enabled: false
+      max_position_usd: 5.0
+      base_fraction: 0.05
+      confidence_multiplier: 0.10
+      late_window_boost: true
+    trail_stop:
+      enabled: false
+    take_profit:
+      enabled: false
+
 runner_mapping:
   script: "scripts/test_btc_5m_session_exit_sl.py"
   direct_flags_now_supported:
