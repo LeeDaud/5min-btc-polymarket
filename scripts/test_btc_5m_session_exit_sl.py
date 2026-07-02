@@ -15,6 +15,12 @@ from dotenv import load_dotenv
 # Load .env from repo root
 load_dotenv(Path(__file__).resolve().parents[1] / '.env')
 
+# Shared HTTP session with proxy support
+_http_session = requests.Session()
+_proxy_url = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy') or os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy') or ''
+if _proxy_url:
+    _http_session.proxies = {'http': _proxy_url, 'https': _proxy_url}
+
 import logging
 logging.getLogger('py_clob_client_v2').setLevel(logging.CRITICAL)
 
@@ -69,7 +75,7 @@ def bucket_5m(ts: int) -> int:
 def fetch_event(slug: str) -> Optional[dict[str, Any]]:
     for attempt in range(3):
         try:
-            r = requests.get('https://gamma-api.polymarket.com/events', params={'slug': slug}, timeout=8)
+            r = _http_session.get('https://gamma-api.polymarket.com/events', params={'slug': slug}, timeout=8)
             r.raise_for_status()
             arr = r.json()
             return arr[0] if arr else None
