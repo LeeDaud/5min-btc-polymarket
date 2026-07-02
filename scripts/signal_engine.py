@@ -106,14 +106,8 @@ class BtcDataFeed:
     @staticmethod
     def _build_session() -> requests.Session:
         s = requests.Session()
-        proxy_url = (
-            os.environ.get('MEXC_HTTP_PROXY') or
-            os.environ.get('HTTPS_PROXY') or
-            os.environ.get('https_proxy') or
-            os.environ.get('HTTP_PROXY') or
-            os.environ.get('http_proxy') or
-            ''
-        )
+        # Only use MEXC-specific proxy, don't leak to Polymarket API
+        proxy_url = os.environ.get('MEXC_PROXY', '')
         if proxy_url:
             s.proxies = {'http': proxy_url, 'https': proxy_url}
         return s
