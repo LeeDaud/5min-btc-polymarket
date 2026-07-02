@@ -10,6 +10,10 @@ from typing import Any, Optional
 from pathlib import Path
 
 import requests
+from dotenv import load_dotenv
+
+# Load .env from repo root
+load_dotenv(Path(__file__).resolve().parents[1] / '.env')
 
 import logging
 logging.getLogger('py_clob_client_v2').setLevel(logging.CRITICAL)
