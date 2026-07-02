@@ -4,6 +4,7 @@ BTC signal quality engine for 5-min Polymarket momentum strategy.
 Active gates: window delta tier + pulse detection (delta-pulse mode).
 VLS-5M mode: VWAP + Squeeze Momentum + Liquidity Sweep.
 """
+import os
 import time
 import statistics
 from dataclasses import dataclass
@@ -91,6 +92,7 @@ class VlsSignalResult:
 class BtcDataFeed:
     TICKER_URL = "https://api.mexc.com/api/v3/ticker/price?symbol=BTCUSDT"
     KLINES_URL = "https://api.mexc.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=12"
+    DAILY_KLINES_URL = "https://api.mexc.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=500"
 
     def __init__(self):
         self._klines_cache: list[Candle1m] = []
@@ -99,10 +101,26 @@ class BtcDataFeed:
         self._consecutive_errors: int = 0
         self._max_consecutive_errors: int = 5
         self._last_error: Optional[str] = None
+        self._session = self._build_session()
+
+    @staticmethod
+    def _build_session() -> requests.Session:
+        s = requests.Session()
+        proxy_url = (
+            os.environ.get('MEXC_HTTP_PROXY') or
+            os.environ.get('HTTPS_PROXY') or
+            os.environ.get('https_proxy') or
+            os.environ.get('HTTP_PROXY') or
+            os.environ.get('http_proxy') or
+            ''
+        )
+        if proxy_url:
+            s.proxies = {'http': proxy_url, 'https': proxy_url}
+        return s
 
     def fetch_price(self) -> Optional[float]:
         try:
-            r = requests.get(self.TICKER_URL, timeout=4)
+            r = self._session.get(self.TICKER_URL, timeout=4)
             r.raise_for_status()
             self._consecutive_errors = 0
             self._last_error = None
@@ -117,7 +135,7 @@ class BtcDataFeed:
         if not force and self._klines_cache and (now - self._klines_ts) < self._cache_ttl:
             return self._klines_cache
         try:
-            r = requests.get(self.KLINES_URL, timeout=6)
+            r = self._session.get(self.KLINES_URL, timeout=6)
             r.raise_for_status()
             rows = r.json()
             candles = []
@@ -146,10 +164,7 @@ class BtcDataFeed:
         if not force and self._klines_cache and (now - self._klines_ts) < self._cache_ttl:
             return self._klines_cache
         try:
-            r = requests.get(
-                "https://api.mexc.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=500",
-                timeout=10,
-            )
+            r = self._session.get(self.DAILY_KLINES_URL, timeout=10)
             r.raise_for_status()
             rows = r.json()
             candles = []
