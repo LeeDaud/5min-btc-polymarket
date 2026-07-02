@@ -548,7 +548,7 @@ def _venv_python(repo: str) -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--repo', default=default_repo_path())
-    ap.add_argument('--profile', choices=['conservative', 'aggressive'], default='conservative')
+    ap.add_argument('--profile', choices=['conservative', 'aggressive', 'vls_5m'], default='conservative')
     ap.add_argument('--threshold', type=float, default=None)
     ap.add_argument('--max-entry-price', type=float, default=None, help='Skip entry if CLOB ask > this price (no upside)')
     ap.add_argument('--stake-usd', type=float, default=None)

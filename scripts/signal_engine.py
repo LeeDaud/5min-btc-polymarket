@@ -11,7 +11,7 @@ from typing import Optional
 
 import requests
 
-from scripts.indicators import (
+from indicators import (
     compute_anchored_vwap, compute_daily_vwap,
     compute_bollinger_bands, compute_keltner_channels,
     compute_squeeze_momentum, detect_liquidity_sweep,
