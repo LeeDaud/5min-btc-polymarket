@@ -1350,9 +1350,6 @@ def main():
         # Also update .last_trade.json to prevent re-entering same slot
         _update_last_trade(opened['market_slug'])
 
-        # Don't dump full report JSON in restart mode (too verbose)
-        if not _in_restart_loop:
-            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return
 
     for i in range(max(1, int(args.close_retry_max))):
@@ -1717,6 +1714,22 @@ def _update_last_trade(slug: str):
 
 _in_restart_loop = False
 
+
+def _print_last_trade():
+    """Print last simulated trade summary from log file."""
+    sim_log = Path(__file__).resolve().parents[1] / 'logs' / 'simulations.jsonl'
+    if not sim_log.exists():
+        return
+    try:
+        with open(sim_log, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+            if lines:
+                last = json.loads(lines[-1])
+                print(f'[LAST] {last["side"]} | in={last["entry_price"]:.4f} out={last["exit_price"]:.4f} | '
+                      f'PnL=${last["pnl_usd"]:+.2f}({last["pnl_pct"]:+.1f}%) | {last["close_reason"]}')
+    except Exception:
+        pass
+
 def _save_trade_log(report: dict):
     log_dir = Path(__file__).resolve().parents[1] / 'logs'
     log_dir.mkdir(exist_ok=True)
@@ -1757,7 +1770,11 @@ def _next_slot_sec() -> float:
 if __name__ == '__main__':
     _in_restart_loop = True
     while True:
-        print(f'\n{"="*50}')
+        _clear_screen()
+        _print_last_trade()
+        print(f'{"="*50}')
+        print(f'BTC 5m Live — {dt.datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")} CST')
+        print(f'{"="*50}\n')
         print(f'BTC 5m Live — {dt.datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")} CST')
         print(f'{"="*50}\n')
         try:
