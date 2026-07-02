@@ -86,7 +86,9 @@ def simulate_slot_vls(all_candles, slot_candles, btc_5min_std=None,
             'sweep_lookback_min': 15, 'sweep_lookback_max': 30,
             'squeeze_period': 20, 'stop_buffer_pct': 0.2,
             'tp1_rr_ratio': 1.5, 'tp2_rr_ratio': 3.0,
-            'btc_to_token_move_ratio': 0.0002,
+            'btc_to_token_move_ratio': 0.002,
+            'max_entry_price': 0.85,
+            'max_stop_loss_pct': 15.0,
         }
     if btc_5min_std is None:
         btc_5min_std = 70.0
@@ -118,22 +120,7 @@ def simulate_slot_vls(all_candles, slot_candles, btc_5min_std=None,
         # Update history with candles seen so far in this slot
         current_history = history + slot_candles[:i + 1]
 
-        # Run VLS signal evaluation
-        vls_result = evaluate_vls_signal(
-            candles=current_history,
-            current_price=btc_now,
-            config=config,
-            entry_token_price=0.55,
-        )
-
-        if not vls_result.passed:
-            continue
-
-        # Determine how model entry price
-        direction = vls_result.direction  # LONG or SHORT
-        pm_direction = 'UP' if direction == 'LONG' else 'DOWN'
-
-        # Model entry price from BTC move (using existing CDF model for fairness)
+        # Model entry price first (from BTC move via CDF) so stop/TP are based on actual entry
         remaining_sec = slot_end - ts
         remaining_vol = btc_5min_std * math.sqrt(remaining_sec / 300.0)
         abs_move = abs(btc_move)
@@ -144,7 +131,21 @@ def simulate_slot_vls(all_candles, slot_candles, btc_5min_std=None,
         fair_prob = max(0.50, min(0.999, fair_prob))
         entry_price = min(0.999, fair_prob + clob_spread / 2.0)
 
-        # Get VLS stop/TP levels (convert from token price space)
+        # Run VLS signal evaluation with actual entry price for stop/TP calculation
+        vls_result = evaluate_vls_signal(
+            candles=current_history,
+            current_price=btc_now,
+            config=config,
+            entry_token_price=entry_price,
+        )
+
+        if not vls_result.passed:
+            continue
+
+        direction = vls_result.direction  # LONG or SHORT
+        pm_direction = 'UP' if direction == 'LONG' else 'DOWN'
+
+        # Get VLS stop/TP levels from signal result
         stop_token = vls_result.stop_loss_token_price or (entry_price * 0.85)
         tp1_token = vls_result.tp1_token_price or (entry_price * 1.08)
         tp2_token = vls_result.tp2_token_price or (entry_price * 1.15)
@@ -193,7 +194,7 @@ def simulate_slot_vls(all_candles, slot_candles, btc_5min_std=None,
                     shares_remaining = 0.5
 
             # VLS TP2 (3:1 R/R) — close remaining
-            if tp1_done or True:
+            if True:  # always check TP2 (either full position or after TP1 partial)
                 tp2_hit = (direction == 'LONG' and current_bid >= tp2_token) or \
                           (direction == 'SHORT' and current_bid <= tp2_token)
                 if tp2_hit:

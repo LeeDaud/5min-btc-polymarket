@@ -153,7 +153,7 @@ profiles:
       stop_buffer_pct: 0.2
       tp1_rr_ratio: 1.5
       tp2_rr_ratio: 3.0
-      btc_to_token_move_ratio: 0.0002
+      btc_to_token_move_ratio: 0.002
     emergency_exit:
       enabled: true
       exit_sec: 15

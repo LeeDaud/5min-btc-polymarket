@@ -61,11 +61,8 @@ def simulate_vls_slot(all_candles, slot_candles, config, btc_5min_std=70.0, clob
             continue
 
         current_history = history + slot_candles[:i + 1]
-        vls = evaluate_vls_signal(current_history, btc_now, config, entry_token_price=0.55)
-        if not vls.passed:
-            continue
 
-        direction = vls.direction
+        # Model entry price first for correct stop/TP calculation
         remaining_sec = slot_end - ts
         remaining_vol = btc_5min_std * math.sqrt(remaining_sec / 300.0)
         abs_move = abs(btc_move)
@@ -73,6 +70,11 @@ def simulate_vls_slot(all_candles, slot_candles, config, btc_5min_std=70.0, clob
         fair_prob = max(0.50, min(0.999, fair_prob))
         entry_price = min(0.999, fair_prob + clob_spread / 2.0)
 
+        vls = evaluate_vls_signal(current_history, btc_now, config, entry_token_price=entry_price)
+        if not vls.passed:
+            continue
+
+        direction = vls.direction
         stop_token = vls.stop_loss_token_price or (entry_price * 0.85)
         tp1_token = vls.tp1_token_price or (entry_price * 1.08)
         tp2_token = vls.tp2_token_price or (entry_price * 1.15)

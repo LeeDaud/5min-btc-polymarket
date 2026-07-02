@@ -402,111 +402,155 @@ def evaluate_vls_signal(
     long_vwap_ok = price_above_vwap
     short_vwap_ok = not price_above_vwap
 
-    # ---- Gate 2: Squeeze must be firing (released from squeeze) ----
-    squeeze_firing = squeeze.just_fired
-    if not squeeze_firing:
+    # ---- Gate 2: Squeeze must be released (not currently squeezing) ----
+    squeeze_released = not squeeze.is_squeezing
+    if not squeeze_released:
         return VlsSignalResult(False, "NONE", vwap, price_above_vwap, False,
                                sweep.bullish_sweep or sweep.bearish_sweep,
                                "bullish" if sweep.bullish_sweep else ("bearish" if sweep.bearish_sweep else ""),
                                sweep.sweep_level if sweep.sweep_level else None,
                                False, squeeze.color, squeeze.momentum_val,
                                current_price, None, None, None, None,
-                               0.0, "squeeze_not_fired")
+                               0.0, "squeeze_active")
 
-    # ---- Gate 3: Sweep must match direction ----
-    # Bullish sweep (fake breakdown) → LONG, Bearish sweep (fake breakout) → SHORT
-    long_sweep_ok = sweep.bullish_sweep
-    short_sweep_ok = sweep.bearish_sweep
+    # ---- Gate 3: Momentum color determines direction ----
+    # Long colors: bright_green (rising bullish), dark_green (bullish)
+    # Short colors: bright_red (falling bearish), dark_red (bearish)
+    long_color = squeeze.color in ("bright_green", "dark_green")
+    short_color = squeeze.color in ("bright_red", "dark_red")
 
-    # ---- Gate 4: Momentum color (after squeeze release) ----
-    # bright_green = positive + rising (LONG), bright_red = negative + falling (SHORT)
-    long_color_ok = squeeze.color == "bright_green"
-    short_color_ok = squeeze.color == "bright_red"
+    # ---- Gate 4: Sweep confirms or VWAP determines direction ----
+    has_sweep = sweep.bullish_sweep or sweep.bearish_sweep
 
-    # ---- Determine direction ----
-    # If side_preference is given, only check that direction
+    # Determine direction: sweep first, then VWAP, then color
+    long_ok = False
+    short_ok = False
+    sweep_level_for_stop = None
+
+    if has_sweep:
+        # Sweep present: it determines direction, but must align with VWAP and color
+        if sweep.bullish_sweep and long_vwap_ok and long_color:
+            long_ok = True
+            sweep_level_for_stop = sweep.sweep_level
+        elif sweep.bearish_sweep and short_vwap_ok and short_color:
+            short_ok = True
+            sweep_level_for_stop = sweep.sweep_level
+    else:
+        # No sweep: VWAP + color determines direction
+        if long_vwap_ok and long_color:
+            long_ok = True
+        elif short_vwap_ok and short_color:
+            short_ok = True
+
+    # Apply side_preference filter
     if side_preference == "UP":
-        short_vwap_ok = False; short_sweep_ok = False; short_color_ok = False
+        short_ok = False
     elif side_preference == "DOWN":
-        long_vwap_ok = False; long_sweep_ok = False; long_color_ok = False
+        long_ok = False
 
-    long_all = long_vwap_ok and long_sweep_ok and long_color_ok
-    short_all = short_vwap_ok and short_sweep_ok and short_color_ok
-
-    if not long_all and not short_all:
-        # Build specific rejection reason
+    if not long_ok and not short_ok:
         reasons = []
         direction = "NONE"
-        # Determine intended direction based on sweep
-        if sweep.bullish_sweep:
-            direction = "LONG"
-            if not long_vwap_ok:
-                reasons.append("vwap_not_above")
-            if not long_color_ok:
-                reasons.append(f"wrong_color_{squeeze.color}")
-        elif sweep.bearish_sweep:
-            direction = "SHORT"
-            if not short_vwap_ok:
-                reasons.append("vwap_not_below")
-            if not short_color_ok:
-                reasons.append(f"wrong_color_{squeeze.color}")
-        elif price_above_vwap:
-            direction = "LONG"
-            reasons.append("no_sweep")
+        if has_sweep:
+            direction = "LONG" if sweep.bullish_sweep else "SHORT"
+            if sweep.bullish_sweep:
+                if not long_vwap_ok:
+                    reasons.append("vwap_not_above")
+                if not long_color:
+                    reasons.append(f"wrong_color_{squeeze.color}")
+            else:
+                if not short_vwap_ok:
+                    reasons.append("vwap_not_below")
+                if not short_color:
+                    reasons.append(f"wrong_color_{squeeze.color}")
         else:
-            direction = "SHORT"
-            reasons.append("no_sweep")
+            direction = "LONG" if price_above_vwap else "SHORT"
+            if price_above_vwap and not long_color:
+                reasons.append(f"wrong_color_{squeeze.color}")
+            elif not price_above_vwap and not short_color:
+                reasons.append(f"wrong_color_{squeeze.color}")
+            if price_above_vwap == (not short_vwap_ok):  # ambiguous
+                reasons.append("no_sweep_no_vwap_consensus")
 
         return VlsSignalResult(False, direction, vwap, price_above_vwap, False,
-                               sweep.bullish_sweep or sweep.bearish_sweep,
+                               has_sweep,
                                "bullish" if sweep.bullish_sweep else ("bearish" if sweep.bearish_sweep else ""),
                                sweep.sweep_level if sweep.sweep_level else None,
-                               squeeze_firing, squeeze.color, squeeze.momentum_val,
+                               squeeze_released, squeeze.color, squeeze.momentum_val,
                                current_price, None, None, None, None,
                                0.0, "|".join(reasons) if reasons else "signal_not_met")
 
     # ---- Determine entry direction ----
-    if long_all:
+    if long_ok:
         direction = "LONG"
-        signal_side = "UP"
-        sweep_level = sweep.sweep_level
     else:
         direction = "SHORT"
-        signal_side = "DOWN"
-        sweep_level = sweep.sweep_level
 
     # ---- Calculate stop loss and take profit ----
     stop_buffer_pct = float(config.get("stop_buffer_pct", 0.2)) / 100.0
     tp1_rr = float(config.get("tp1_rr_ratio", 1.5))
     tp2_rr = float(config.get("tp2_rr_ratio", 3.0))
 
-    if direction == "LONG":
-        # Stop loss at sweep low minus buffer%
-        stop_btc = sweep_level * (1.0 - stop_buffer_pct)
-        # Distance from entry to stop (in BTC $)
-        stop_distance = current_price - stop_btc
+    if sweep_level_for_stop is not None:
+        # Use sweep level for precise stop placement
+        if direction == "LONG":
+            stop_btc = sweep_level_for_stop * (1.0 - stop_buffer_pct)
+            stop_distance = current_price - stop_btc
+        else:
+            stop_btc = sweep_level_for_stop * (1.0 + stop_buffer_pct)
+            stop_distance = stop_btc - current_price
     else:
-        stop_btc = sweep_level * (1.0 + stop_buffer_pct)
-        stop_distance = stop_btc - current_price
+        # No sweep: use ATR-based stop distance
+        atr = _indicator_atr(candles, period=5)
+        if atr is None:
+            atr = current_price * 0.0005  # fallback: 0.05% of price
+        stop_distance = atr * 2.0  # 2x ATR as stop distance
+        if direction == "LONG":
+            stop_btc = current_price - stop_distance
+        else:
+            stop_btc = current_price + stop_distance
 
     if stop_distance <= 0:
-        stop_distance = 50.0  # fallback: $50 BTC move
+        stop_distance = 50.0
 
     # Convert BTC distance to token price distance
-    btc_to_token_ratio = float(config.get("btc_to_token_move_ratio", 0.0002))
+    btc_to_token_ratio = float(config.get("btc_to_token_move_ratio", 0.002))
     token_stop_distance = stop_distance * btc_to_token_ratio
 
     if entry_token_price is None or entry_token_price <= 0:
-        entry_token_price = 0.55  # reasonable default
+        entry_token_price = 0.55
+
+    # Cap stop distance at 15% of entry price (max loss per trade)
+    max_stop_pct = float(config.get("max_stop_loss_pct", 15.0)) / 100.0
+    max_token_stop = entry_token_price * max_stop_pct
+    token_stop_distance = min(token_stop_distance, max_token_stop)
+
+    # Reject if entry price too high (no upside)
+    max_entry = float(config.get("max_entry_price", 0.85))
+    if entry_token_price > max_entry:
+        return VlsSignalResult(False, direction, vwap, price_above_vwap, False,
+                               has_sweep,
+                               "bullish" if sweep.bullish_sweep else ("bearish" if sweep.bearish_sweep else ""),
+                               sweep_level_for_stop,
+                               squeeze_released, squeeze.color, squeeze.momentum_val,
+                               current_price, None, None, None, None,
+                               0.0, f"entry_too_expensive_{entry_token_price:.3f}")
 
     if direction == "LONG":
         stop_token = entry_token_price - token_stop_distance
-        tp1_token = entry_token_price + token_stop_distance * tp1_rr
-        tp2_token = entry_token_price + token_stop_distance * tp2_rr
+        # Scale R/R targets: when entry is high, upside is naturally capped
+        remaining_upside = 0.98 - entry_token_price
+        effective_tp1 = min(token_stop_distance * tp1_rr, remaining_upside * 0.5)
+        effective_tp2 = min(token_stop_distance * tp2_rr, remaining_upside * 0.85)
+        tp1_token = entry_token_price + effective_tp1
+        tp2_token = entry_token_price + effective_tp2
     else:
         stop_token = entry_token_price + token_stop_distance
-        tp1_token = entry_token_price - token_stop_distance * tp1_rr
-        tp2_token = entry_token_price - token_stop_distance * tp2_rr
+        remaining_downside = entry_token_price - 0.02
+        effective_tp1 = min(token_stop_distance * tp1_rr, remaining_downside * 0.5)
+        effective_tp2 = min(token_stop_distance * tp2_rr, remaining_downside * 0.85)
+        tp1_token = entry_token_price - effective_tp1
+        tp2_token = entry_token_price - effective_tp2
 
     stop_token = max(0.02, min(0.98, stop_token))
     tp1_token = max(0.02, min(0.98, tp1_token))
@@ -539,9 +583,9 @@ def evaluate_vls_signal(
         vwap=vwap,
         price_above_vwap=price_above_vwap,
         vwap_aligned=(direction == "LONG" and price_above_vwap) or (direction == "SHORT" and not price_above_vwap),
-        sweep_detected=True,
-        sweep_type="bullish" if sweep.bullish_sweep else "bearish",
-        sweep_level=sweep_level,
+        sweep_detected=has_sweep,
+        sweep_type="bullish" if sweep.bullish_sweep else ("bearish" if sweep.bearish_sweep else ""),
+        sweep_level=sweep_level_for_stop,
         squeeze_firing=True,
         squeeze_color=squeeze.color,
         squeeze_momentum=squeeze.momentum_val,
