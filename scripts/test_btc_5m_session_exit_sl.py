@@ -649,10 +649,15 @@ def main():
             btc_feed = None
 
     print(f"  [LOOP] Entering monitor loop, timeout={args.entry_timeout_min}min", flush=True)
+    last_heartbeat = 0.0
     while time.time() < deadline:
         try:
             m = resolve_active_current_5m_market()
             if not m:
+                now_ts = time.time()
+                if now_ts - last_heartbeat > 30:
+                    print(f"[{ts_local()}] No active market, waiting...", flush=True)
+                    last_heartbeat = now_ts
                 report['attempts'].append({'ts': ts_utc(), 'status': 'heartbeat_no_current_market'})
                 time.sleep(args.poll_sec)
                 continue
@@ -1342,7 +1347,12 @@ def main():
         with open(sim_log_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(sim_entry, ensure_ascii=False) + '\n')
 
-        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        # Also update .last_trade.json to prevent re-entering same slot
+        _update_last_trade(opened['market_slug'])
+
+        # Don't dump full report JSON in restart mode (too verbose)
+        if not _in_restart_loop:
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return
 
     for i in range(max(1, int(args.close_retry_max))):
@@ -1688,6 +1698,25 @@ def main():
 def _clear_screen():
     os.system('cls' if sys.platform == 'win32' else 'clear')
 
+
+def _update_last_trade(slug: str):
+    """Add a slug to .last_trade.json to prevent re-entry on restart."""
+    lt_path = Path(__file__).resolve().parents[1] / '.last_trade.json'
+    entries = []
+    try:
+        if lt_path.exists():
+            with open(lt_path) as f:
+                entries = json.load(f)
+    except Exception:
+        entries = []
+    if not any(e.get('slug') == slug for e in entries):
+        entries.append({'slug': slug})
+    with open(lt_path, 'w') as f:
+        json.dump(entries, f)
+
+
+_in_restart_loop = False
+
 def _save_trade_log(report: dict):
     log_dir = Path(__file__).resolve().parents[1] / 'logs'
     log_dir.mkdir(exist_ok=True)
@@ -1726,9 +1755,9 @@ def _next_slot_sec() -> float:
     return max(1, next_start - now)
 
 if __name__ == '__main__':
+    _in_restart_loop = True
     while True:
-        _clear_screen()
-        print(f'{"="*50}')
+        print(f'\n{"="*50}')
         print(f'BTC 5m Live — {dt.datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")} CST')
         print(f'{"="*50}\n')
         try:
