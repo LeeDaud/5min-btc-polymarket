@@ -73,17 +73,13 @@ def bucket_5m(ts: int) -> int:
 
 
 def fetch_event(slug: str) -> Optional[dict[str, Any]]:
-    for attempt in range(3):
-        try:
-            r = _http_session.get('https://gamma-api.polymarket.com/events', params={'slug': slug}, timeout=8)
-            r.raise_for_status()
-            arr = r.json()
-            return arr[0] if arr else None
-        except Exception as e:
-            if attempt < 2:
-                time.sleep(1)
-            else:
-                raise
+    try:
+        r = _http_session.get('https://gamma-api.polymarket.com/events', params={'slug': slug}, timeout=8)
+        r.raise_for_status()
+        arr = r.json()
+        return arr[0] if arr else None
+    except Exception:
+        return None
 
 
 def resolve_active_current_5m_market() -> Optional[dict[str, Any]]:
@@ -636,15 +632,21 @@ def main():
         'min_confidence': float(getattr(args, 'btc_min_confidence', 0) or 0),
         'enable_pulse_filter': True,
     }
-    if getattr(args, 'enable_btc_signal', False):
+    # VLS-5M always needs BTC feed; delta-pulse depends on enable_btc_signal
+    need_btc_feed = getattr(args, 'strategy', 'delta-pulse') == 'vls-5m' or getattr(args, 'enable_btc_signal', False)
+    if need_btc_feed:
         try:
             btc_feed = BtcDataFeed()
-            _ = btc_feed.fetch_klines()  # pre-warm cache
-            print(f"  [BTC] Filters: delta>={btc_signal_config['window_delta_min_tier']} + pulse")
+            _ = btc_feed.fetch_klines()
+            print(f"  [BTC] Feed ready, {len(_)} candles cached", flush=True)
         except Exception as e:
-            print(f"  [WARN] BTC data feed init failed: {e}. Continuing without BTC filters.")
+            print(f"  [WARN] BTC data feed init failed: {e}.", flush=True)
+            if getattr(args, 'strategy', '') == 'vls-5m':
+                print(f"  [FATAL] VLS-5M requires BTC data. Exiting.", flush=True)
+                return
             btc_feed = None
 
+    print(f"  [LOOP] Entering monitor loop, timeout={args.entry_timeout_min}min", flush=True)
     while time.time() < deadline:
         try:
             m = resolve_active_current_5m_market()
