@@ -1319,6 +1319,25 @@ def main():
         print(f"{'='*60}\n", flush=True)
         report['finished_at'] = ts_utc()
         report['result'] = 'simulated_complete'
+
+        # Write to simulation log
+        sim_log_path = Path(__file__).resolve().parents[1] / 'logs' / 'simulations.jsonl'
+        sim_log_path.parent.mkdir(parents=True, exist_ok=True)
+        sim_entry = {
+            'ts': ts_utc(),
+            'slug': opened['market_slug'],
+            'side': opened['side'],
+            'entry_price': entry,
+            'exit_price': exit_price,
+            'pnl_usd': round(total_pnl, 2),
+            'pnl_pct': round(total_pnl_pct, 2),
+            'close_reason': close_reason,
+            'tp1_hit': tp1_shares > 0,
+            'vls_signal': report.get('vls_signal', {}),
+        }
+        with open(sim_log_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(sim_entry, ensure_ascii=False) + '\n')
+
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return
 
