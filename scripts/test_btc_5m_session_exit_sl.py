@@ -918,6 +918,37 @@ def main():
                 )
                 print(f"  -> Dynamic sizing: ${entry_stake:.2f} (conf={signal_result.confidence:.0f}%)")
 
+            # ---- Position entry ----
+            is_vls_dry_run = (getattr(args, 'strategy', 'delta-pulse') == 'vls-5m'
+                              and not args.execute
+                              and report.get('vls_signal'))
+
+            if is_vls_dry_run:
+                # Simulate entry with real CLOB price, monitor with real bid prices
+                vls_sig = report['vls_signal']
+                sim_entry = trigger_price if trigger_price else 0.55
+                sim_notional = entry_stake
+                sim_cost = sim_notional
+                sim_shares = sim_notional / sim_entry if sim_entry > 0 else 5.0
+                sim_token = up_t if side == 'UP' else dn_t
+                opened = {
+                    'opened_at': ts_utc(),
+                    'market_slug': slug,
+                    'market_end_iso': end_iso,
+                    'side': side,
+                    'token_id': sim_token,
+                    'entry_price': sim_entry,
+                    'shares': sim_shares,
+                    'cost_usdc': sim_cost,
+                    'open_order_id': 'simulated',
+                    'open_tx': 'simulated',
+                    '_simulated': True,
+                }
+                print(f"  [SIM] ENTER {side} @ {sim_entry:.4f} size=${sim_notional:.1f}"
+                      f" | stop={vls_sig['stop_loss_token']:.4f} tp1={vls_sig['tp1_token']:.4f} tp2={vls_sig['tp2_token']:.4f}", flush=True)
+                traded_slugs.add(opened['market_slug'])
+                break
+
             opened = None
             for attempt in range(2):
                 if attempt > 0:
@@ -1156,31 +1187,40 @@ def main():
                              (opened['side'] == 'DOWN' and side_px is not None and side_px <= vls_tp1_price)
                 if tp_reached:
                     close_shares = opened['shares'] * 0.5
-                    print(f"  [VLS TP1] 1.5:1 reached, closing 50% ({close_shares:.4f} shares)", flush=True)
-                    try:
-                        out_p, objs_p = run_close(args.repo, opened['market_slug'], opened['token_id'], close_shares, args.execute, close_order_type='FAK')
-                        last_p = objs_p[-1] if objs_p else {}
-                        post_p = last_p.get('order_post_result') or {}
-                        if post_p.get('success') and str(post_p.get('status', '')).lower() == 'matched':
-                            close_rev = float(post_p.get('takingAmount') or 0)
-                            opened['shares'] -= close_shares
-                            if opened['shares'] < 0:
-                                opened['shares'] = 0
-                            vls_tp1_done = True
-                            report['vls_tp1'] = {'shares_closed': close_shares, 'revenue': close_rev}
-                            # Move stop to breakeven
-                            trail_stop = opened['entry_price']
-                            print(f"  [VLS TP1] done, remaining {opened['shares']:.4f} shares, stop→breakeven {trail_stop:.4f}", flush=True)
-                            if gtc_safety_id and client:
-                                try:
-                                    client.cancel(gtc_safety_id)
-                                except Exception:
-                                    pass
-                                gtc_safety_id = None
-                        else:
-                            print(f"  [VLS TP1] order failed, status={post_p.get('status', '?')}", flush=True)
-                    except Exception as e:
-                        print(f"  [VLS TP1] failed: {e}", flush=True)
+                    is_sim = opened.get('_simulated', False)
+                    if is_sim:
+                        # Simulated: log and update directly
+                        tp1_rev = close_shares * side_px
+                        opened['shares'] -= close_shares
+                        vls_tp1_done = True
+                        trail_stop = opened['entry_price']
+                        report['vls_tp1'] = {'shares_closed': close_shares, 'revenue': tp1_rev, 'price': side_px}
+                        print(f"  [SIM TP1] +{pnl_pct:.1f}% 50% closed @ {side_px:.4f} rev=${tp1_rev:.2f} stop→breakeven {trail_stop:.4f}", flush=True)
+                    else:
+                        print(f"  [VLS TP1] 1.5:1 reached, closing 50% ({close_shares:.4f} shares)", flush=True)
+                        try:
+                            out_p, objs_p = run_close(args.repo, opened['market_slug'], opened['token_id'], close_shares, args.execute, close_order_type='FAK')
+                            last_p = objs_p[-1] if objs_p else {}
+                            post_p = last_p.get('order_post_result') or {}
+                            if post_p.get('success') and str(post_p.get('status', '')).lower() == 'matched':
+                                close_rev = float(post_p.get('takingAmount') or 0)
+                                opened['shares'] -= close_shares
+                                if opened['shares'] < 0:
+                                    opened['shares'] = 0
+                                vls_tp1_done = True
+                                report['vls_tp1'] = {'shares_closed': close_shares, 'revenue': close_rev}
+                                trail_stop = opened['entry_price']
+                                print(f"  [VLS TP1] done, remaining {opened['shares']:.4f} shares, stop→breakeven {trail_stop:.4f}", flush=True)
+                                if gtc_safety_id and client:
+                                    try:
+                                        client.cancel(gtc_safety_id)
+                                    except Exception:
+                                        pass
+                                    gtc_safety_id = None
+                            else:
+                                print(f"  [VLS TP1] order failed, status={post_p.get('status', '?')}", flush=True)
+                        except Exception as e:
+                            print(f"  [VLS TP1] failed: {e}", flush=True)
 
             # VLS-5M TP2 (3:1 R/R): close remaining
             if is_vls and vls_tp2_price is not None:
@@ -1233,6 +1273,54 @@ def main():
     out = ''
     fallback_used = None
     force_close_used = None
+
+    # ---- Simulated close: skip real orders, compute PnL from last bid ----
+    if opened.get('_simulated', False):
+        last_bid = report.get('last_side_price')
+        if last_bid is None:
+            try:
+                last_bid = clob_best_bid(opened['token_id'])
+            except Exception:
+                last_bid = opened['entry_price']
+        exit_price = last_bid if last_bid else opened['entry_price']
+
+        # Compute simulated PnL
+        entry = opened['entry_price']
+        remaining_shares = opened['shares']
+        tp1_info = report.get('vls_tp1', {})
+        tp1_shares = tp1_info.get('shares_closed', 0)
+        tp1_price = tp1_info.get('price', entry)
+        tp1_rev = tp1_info.get('revenue', 0)
+
+        total_pnl = (tp1_price - entry) * tp1_shares + (exit_price - entry) * remaining_shares
+        total_pnl_pct = (total_pnl / (entry * (tp1_shares + remaining_shares))) * 100 if (tp1_shares + remaining_shares) > 0 else 0
+
+        closed = {
+            'close_reason': close_reason,
+            'closed_at': ts_utc(),
+            'close_success': True,
+            'close_status': 'simulated',
+            'simulated_exit_price': round(exit_price, 4),
+            'simulated_pnl_usd': round(total_pnl, 2),
+            'simulated_pnl_pct': round(total_pnl_pct, 2),
+            'tp1_shares_closed': round(tp1_shares, 4),
+            'remaining_shares': round(remaining_shares, 4),
+        }
+        report['closed'] = closed
+        report['close_debug'] = [{'ts': ts_utc(), 'status': 'simulated', 'exit_price': exit_price}]
+
+        print(f"\n{'='*60}")
+        print(f"  SIMULATION RESULT: {opened['side']} | {close_reason}")
+        print(f"  Entry: {entry:.4f}  Exit: {exit_price:.4f}")
+        if tp1_shares > 0:
+            print(f"  TP1 partial: {tp1_shares:.4f} shares @ {tp1_price:.4f}")
+        print(f"  Remaining: {remaining_shares:.4f} shares @ {exit_price:.4f}")
+        print(f"  PnL: ${total_pnl:+.2f} ({total_pnl_pct:+.1f}%)")
+        print(f"{'='*60}\n", flush=True)
+        report['finished_at'] = ts_utc()
+        report['result'] = 'simulated_complete'
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return
 
     for i in range(max(1, int(args.close_retry_max))):
         bb = None
