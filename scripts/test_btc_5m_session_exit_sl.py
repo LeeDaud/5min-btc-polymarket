@@ -465,7 +465,8 @@ def load_profile_from_yaml(profile_name: str) -> Optional[dict[str, Any]]:
             flat['vls_tp1_rr_ratio'] = float(vls.get('tp1_rr_ratio', 1.5))
             flat['vls_tp2_rr_ratio'] = float(vls.get('tp2_rr_ratio', 3.0))
             flat['vls_btc_to_token_ratio'] = float(vls.get('btc_to_token_move_ratio', 0.0002))
-            flat['vls_max_stop_loss_pct'] = float(vls.get('max_stop_loss_pct', 8.0))
+            flat['vls_max_stop_loss_pct'] = float(vls.get('max_stop_loss_pct', 15.0))
+            flat['vls_min_btc_move_usd'] = float(vls.get('min_btc_move_usd', 40))
         return flat
     except Exception:
         return None
@@ -535,7 +536,8 @@ def apply_profile(args: argparse.Namespace) -> argparse.Namespace:
         args.vls_tp1_rr_ratio = float(prof.get('vls_tp1_rr_ratio', 1.5))
         args.vls_tp2_rr_ratio = float(prof.get('vls_tp2_rr_ratio', 3.0))
         args.vls_btc_to_token_ratio = float(prof.get('vls_btc_to_token_ratio', 0.002))
-        args.vls_max_stop_loss_pct = float(prof.get('vls_max_stop_loss_pct', 8.0))
+        args.vls_max_stop_loss_pct = float(prof.get('vls_max_stop_loss_pct', 15.0))
+        args.vls_min_btc_move_usd = float(prof.get('vls_min_btc_move_usd', 40))
     return args
 
 
@@ -740,6 +742,24 @@ def main():
                     time.sleep(args.poll_sec)
                     continue
 
+                # BTC move filter: require minimum BTC movement from window open (aligns with backtest)
+                min_btc_move = float(getattr(args, 'vls_min_btc_move_usd', 40))
+                bucket_ts = int(slug.split('-')[-1])
+                window_open = btc_feed.get_window_open(bucket_ts)
+                if window_open is not None:
+                    btc_move = abs(btc_price - window_open)
+                    if btc_move < min_btc_move:
+                        print(f"  -> VLS REJECT: BTC move ${btc_move:.0f} < ${min_btc_move:.0f} min", flush=True)
+                        report['attempts'].append({
+                            'ts': ts_utc(), 'slug': slug, 'status': 'skip_vls_btc_move',
+                            'reason': f'btc_move_too_small',
+                            'btc_move': round(btc_move, 1),
+                            'btc_price': btc_price,
+                            'window_open': window_open,
+                        })
+                        time.sleep(args.poll_sec)
+                        continue
+
                 daily_candles = btc_feed.fetch_klines_daily()
                 if not daily_candles or len(daily_candles) < 30:
                     print(f"  -> VLS REJECT: insufficient candle data ({len(daily_candles) if daily_candles else 0})", flush=True)
@@ -760,7 +780,7 @@ def main():
                     'tp2_rr_ratio': float(getattr(args, 'vls_tp2_rr_ratio', 3.0)),
                     'btc_to_token_move_ratio': float(getattr(args, 'vls_btc_to_token_ratio', 0.002)),
                     'max_entry_price': float(args.max_entry_price or 0.85),
-                    'max_stop_loss_pct': float(getattr(args, 'vls_max_stop_loss_pct', 8.0)),
+                    'max_stop_loss_pct': float(getattr(args, 'vls_max_stop_loss_pct', 15.0)),
                 }
 
                 # Use CLOB ask as the entry token price reference
@@ -1770,14 +1790,12 @@ def _next_slot_sec() -> float:
 if __name__ == '__main__':
     _in_restart_loop = True
     while True:
-        _clear_screen()
-        _print_last_trade()
-        print(f'{"="*50}')
-        print(f'BTC 5m Live — {dt.datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")} CST')
-        print(f'{"="*50}\n')
-        print(f'BTC 5m Live — {dt.datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")} CST')
-        print(f'{"="*50}\n')
         try:
+            _clear_screen()
+            _print_last_trade()
+            print(f'{"="*50}')
+            print(f'BTC 5m Live — {dt.datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")} CST')
+            print(f'{"="*50}\n')
             main()
         except KeyboardInterrupt:
             print('\n[STOP] Keyboard interrupt, exiting.')
@@ -1786,5 +1804,9 @@ if __name__ == '__main__':
             print(f'\n[FATAL] {e}', flush=True)
             time.sleep(5)
         wait = _next_slot_sec()
-        print(f'\n[RESTART] Next cycle at {ts_local()} (in {wait:.0f}s)...\n', flush=True)
-        time.sleep(wait)
+        try:
+            print(f'\n[RESTART] Next cycle at {ts_local()} (in {wait:.0f}s)...\n', flush=True)
+            time.sleep(wait)
+        except KeyboardInterrupt:
+            print('\n[STOP] Keyboard interrupt during restart wait, exiting.')
+            break

@@ -563,7 +563,7 @@ def evaluate_vls_signal(
         entry_token_price = 0.55
 
     # Cap stop distance at 15% of entry price (max loss per trade)
-    max_stop_pct = float(config.get("max_stop_loss_pct", 10.0)) / 100.0
+    max_stop_pct = float(config.get("max_stop_loss_pct", 15.0)) / 100.0
     max_token_stop = entry_token_price * max_stop_pct
     token_stop_distance = min(token_stop_distance, max_token_stop)
 

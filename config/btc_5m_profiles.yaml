@@ -151,7 +151,8 @@ profiles:
       sweep_lookback_min: 15
       sweep_lookback_max: 30
       stop_buffer_pct: 0.2
-      max_stop_loss_pct: 8.0
+      max_stop_loss_pct: 15.0
+      min_btc_move_usd: 40
       tp1_rr_ratio: 1.5
       tp2_rr_ratio: 3.0
       btc_to_token_move_ratio: 0.002
